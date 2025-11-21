@@ -55,41 +55,23 @@ const STATUS_OPTIONS = {
 };
 
 const PRIORITY_IDS = [
-  // Andar 1
   '102','103','104','105','106','110','113','115','117','119','120',
-  // Andar 2
   '201','202','203','204','205','210','213','214','215','217','218','219','220',
-  // Andar 3
   '301','304','305','306','307','309','313','314','315','318','320',
-  // Andar 4
   '402','403','404','413','414','415','416','417','418','419',
-  // Andar 5
   '501','502','503','504','505','506','510','511','513','514','515','516','520',
-  // Andar 6
   '601','602','603','617','618',
-  // Andar 7
   '701','705','706','708','709','712','713','719','720',
-  // Andar 8
   '801','802','805','810','813','815','816','817','818','819',
-  // Andar 9
   '901','902','903','904','905','906','910','912','913','914','916','917','918','919','920',
-  // Andar 10
   '1001','1002','1004','1005','1006','1013','1015','1016','1017','1019',
-  // Andar 11
   '1102','1103','1104','1105','1106','1107','1108','1110','1111','1112','1113','1114','1115','1117','1119','1120',
-  // Andar 12
   '1202','1203','1205','1206','1207','1208','1212','1214','1215','1217','1218','1219','1220',
-  // Andar 13
   '1301','1302','1304','1305','1306','1313','1314','1315','1317','1318',
-  // Andar 14
   '1401','1404','1406','1407','1408','1412','1414','1415','1416','1417','1418','1420',
-  // Andar 15
   '1501','1504','1506','1507','1510','1511','1512','1514','1517','1519','1520',
-  // Andar 16
   '1602','1603','1604','1606','1608','1613','1614','1615','1616','1618','1619',
-  // Andar 17
   '1702','1703','1705','1711','1712','1715','1718','1719','1720',
-  // Andar 18
   '1801','1802','1803','1810','1811','1814','1815','1818','1819','1820'
 ];
 
@@ -219,8 +201,18 @@ export default function App() {
       text += "🎉 Nenhuma pendência registrada no momento!";
     }
 
-    navigator.clipboard.writeText(text);
-    alert("📋 Relatório copiado! Pode colar no WhatsApp.");
+    // Tentativa de usar a API de clipboard de forma segura
+    try {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+        alert("📋 Relatório copiado! Pode colar no WhatsApp.");
+    } catch (err) {
+        alert("Erro ao copiar automaticamente. Tente manualmente.");
+    }
   };
 
   // --- Estatísticas ---
@@ -286,12 +278,10 @@ export default function App() {
      return Math.round((done / floorApts.length) * 100);
   };
 
-
   if (loading) return <div className="flex items-center justify-center h-screen bg-gray-100 text-gray-600 font-medium animate-pulse">Carregando Vistoria...</div>;
 
   return (
     <div className="min-h-screen bg-gray-100 font-sans flex flex-col">
-      
       <header className="bg-slate-800 text-white p-4 shadow-lg sticky top-0 z-30">
         <div className="max-w-7xl mx-auto">
           {/* Top Bar: Título e Ações Principais */}
