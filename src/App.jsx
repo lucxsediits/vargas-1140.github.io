@@ -26,10 +26,13 @@ import {
   Share2,
   Filter,
   X,
-  CalendarClock
+  CalendarClock,
+  Maximize2
 } from 'lucide-react';
 
-// --- Cole sua configuração aqui ---
+// ------------------------------------------------------------------
+// CONFIGURAÇÃO DO SEU FIREBASE
+// -------------------------------------------------------------------
 const firebaseConfig = {
     apiKey: "AIzaSyCXUG9VanJhe-huto707XTszRMCOjmzvA0",
     authDomain: "vargascury1140.firebaseapp.com",
@@ -37,10 +40,9 @@ const firebaseConfig = {
     storageBucket: "vargascury1140.firebasestorage.app",
     messagingSenderId: "248969218430",
     appId: "1:248969218430:web:6ffaee66a679c93659cb2f",
-    measurementId: "G-ZWHG09M19B"
+    measurementId: "G-ZWHG09M19B",
   };
 
-// Inicializa o Firebase apenas se a config estiver preenchida
 let app, auth, db;
 try {
   if (firebaseConfig.apiKey) {
@@ -49,17 +51,18 @@ try {
     db = getFirestore(app);
   }
 } catch (e) {
-  console.error("Erro ao inicializar Firebase. Verifique a configuração.");
+  console.error("Erro Firebase");
 }
 
-// --- Definições de Negócio ---
-const STATUS_OPTIONS = {
-  'nao-verificado': { label: 'Não Verificado', color: 'bg-yellow-400 text-yellow-900', icon: HelpCircle },
-  'dificil': { label: 'Difícil de Zerar', color: 'bg-red-600 text-white', icon: XCircle },
-  'facil': { label: 'Fácil de Zerar', color: 'bg-cyan-500 text-white', icon: AlertCircle },
-  'pronto': { label: 'Prontos', color: 'bg-green-600 text-white', icon: CheckCircle2 },
+// --- Configurações Visuais ---
+const STATUS_CONFIG = {
+  'nao-verificado': { label: 'Não Verificado', bg: 'bg-yellow-400', text: 'text-yellow-900', icon: HelpCircle },
+  'dificil': { label: 'Difícil', bg: 'bg-red-600', text: 'text-white', icon: XCircle },
+  'facil': { label: 'Fácil', bg: 'bg-cyan-500', text: 'text-white', icon: AlertCircle },
+  'pronto': { label: 'Pronto', bg: 'bg-green-600', text: 'text-white', icon: CheckCircle2 },
 };
 
+// Lista dos Principais (Mantida)
 const PRIORITY_IDS = [
   '102','103','104','105','106','110','113','115','117','119','120',
   '201','202','203','204','205','210','213','214','215','217','218','219','220',
@@ -95,32 +98,11 @@ export default function App() {
   const [showOnlyPriority, setShowOnlyPriority] = useState(false);
   const [statusFilter, setStatusFilter] = useState(null);
 
-  // Se o firebase não estiver configurado, mostra aviso
-  if (!app) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-red-50 p-10 text-center font-sans">
-        <div className="max-w-md bg-white p-6 rounded-xl shadow-lg border border-red-200">
-          <h1 className="text-2xl font-bold text-red-700 mb-4">⚠️ Configuração Pendente</h1>
-          <p className="text-gray-600 mb-4">
-            Você precisa colar suas chaves do Firebase no início do arquivo <code>src/App.jsx</code>.
-          </p>
-          <p className="text-sm text-gray-500">
-            Procure por <code>const firebaseConfig = ...</code> e substitua pelo código que você copiou do site do Firebase.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // Verificação de segurança da chave
+  if (!app) return <div className="p-10 text-center text-red-600 font-bold">Configure o Firebase no código!</div>;
 
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        await signInAnonymously(auth);
-      } catch (err) {
-        console.error("Erro na autenticação:", err);
-      }
-    };
-    initAuth();
+    signInAnonymously(auth);
     const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
@@ -131,16 +113,13 @@ export default function App() {
       collection(db, 'vargas_vistoria_data'),
       (snapshot) => {
         const data = {};
-        snapshot.forEach((doc) => {
-          data[doc.id] = doc.data();
-        });
+        snapshot.forEach((doc) => data[doc.id] = doc.data());
         if (Object.keys(data).length === 0) initializeData();
         else {
           setApartments(data);
           setLoading(false);
         }
-      },
-      (error) => console.error("Erro ao buscar dados:", error)
+      }
     );
     return () => unsubscribe();
   }, [user]);
@@ -148,365 +127,241 @@ export default function App() {
   const initializeData = async () => {
     setLoading(true);
     const batch = writeBatch(db);
-    let operationCount = 0;
-    for (let floor = 1; floor <= FLOORS_TOTAL; floor++) {
-      for (let unit = 1; unit <= UNITS_PER_FLOOR; unit++) {
-        const aptId = `${floor}${unit.toString().padStart(2, '0')}`;
-        const ref = doc(db, 'vargas_vistoria_data', aptId);
-        batch.set(ref, {
-          id: aptId,
-          status: 'nao-verificado',
-          notes: '',
-          isPriority: PRIORITY_IDS.includes(aptId)
+    let op = 0;
+    for (let f = 1; f <= FLOORS_TOTAL; f++) {
+      for (let u = 1; u <= UNITS_PER_FLOOR; u++) {
+        const id = `${f}${u.toString().padStart(2, '0')}`;
+        batch.set(doc(db, 'vargas_vistoria_data', id), {
+          id, status: 'nao-verificado', notes: '', isPriority: PRIORITY_IDS.includes(id)
         });
-        operationCount++;
-        if (operationCount >= 450) {
-          await batch.commit();
-          operationCount = 0;
-        }
+        op++;
+        if (op >= 450) { await batch.commit(); op = 0; }
       }
     }
-    if (operationCount > 0) await batch.commit();
+    if (op > 0) await batch.commit();
     setLoading(false);
-  };
-
-  const handleAptClick = (aptId) => {
-    const apt = apartments[aptId] || { status: 'nao-verificado', notes: '' };
-    setSelectedAptId(aptId);
-    setEditStatus(apt.status);
-    setEditNotes(apt.notes || '');
   };
 
   const handleSave = async () => {
     if (!user || !selectedAptId) return;
-    try {
-      await setDoc(
-        doc(db, 'vargas_vistoria_data', selectedAptId),
-        {
-          id: selectedAptId,
-          status: editStatus,
-          notes: editNotes,
-          updatedAt: new Date().toISOString(),
-          updatedBy: "Usuário", 
-          isPriority: PRIORITY_IDS.includes(selectedAptId)
-        },
-        { merge: true }
-      );
-      setSelectedAptId(null);
-    } catch (error) {
-      alert("Erro ao salvar no banco de dados.");
-    }
+    await setDoc(doc(db, 'vargas_vistoria_data', selectedAptId), {
+      id: selectedAptId,
+      status: editStatus,
+      notes: editNotes,
+      updatedAt: new Date().toISOString(),
+      updatedBy: "Admin",
+      isPriority: PRIORITY_IDS.includes(selectedAptId)
+    }, { merge: true });
+    setSelectedAptId(null);
   };
 
-  const copyReportToClipboard = () => {
-    const today = new Date().toLocaleDateString('pt-BR');
-    const now = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    
-    let text = `🏗️ *RESUMO VISTORIA - VARGAS 1140*\n📅 ${today} às ${now}\n\n`;
-    text += `✅ *Total Prontos:* ${stats['pronto']}/${stats.total}\n`;
-    text += `⭐ *Principais Prontos:* ${stats.priorityOk}/${stats.priorityTotal}\n\n`;
-    
-    const problemApts = Object.values(apartments)
-      .filter(apt => apt.status === 'dificil' || apt.status === 'facil')
-      .sort((a, b) => parseInt(a.id) - parseInt(b.id));
-
-    if (problemApts.length > 0) {
-      text += `⚠️ *PENDÊNCIAS (${problemApts.length}):*\n`;
-      problemApts.forEach(apt => {
-         const icon = apt.status === 'dificil' ? '🔴' : '🔵';
-         const notes = apt.notes ? `- ${apt.notes}` : '';
-         text += `${icon} *Apto ${apt.id}*: ${notes}\n`;
-      });
-    } else {
-      text += "🎉 Nenhuma pendência registrada no momento!";
-    }
-
-    navigator.clipboard.writeText(text).then(() => {
-      alert("📋 Relatório copiado! Pode colar no WhatsApp.");
-    }).catch(() => {
-      alert("Erro ao copiar. Tente selecionar e copiar manualmente.");
-    });
+  const copyReport = () => {
+    const done = Object.values(apartments).filter(a => a.status === 'pronto').length;
+    const total = Object.values(apartments).length;
+    const text = `*VARGAS 1140 - STATUS*\n✅ Prontos: ${done}/${total}\n\nAcesse o painel para ver detalhes.`;
+    navigator.clipboard.writeText(text).then(() => alert("Relatório copiado!"));
   };
 
   const stats = useMemo(() => {
-    const counts = {
-      'pronto': 0, 'facil': 0, 'dificil': 0, 'nao-verificado': 0,
-      total: 0, priorityTotal: 0, priorityOk: 0
-    };
-    
+    const s = { pronto: 0, facil: 0, dificil: 0, 'nao-verificado': 0, priorityOk: 0, priorityTotal: 0 };
     PRIORITY_IDS.forEach(id => {
-      const apt = apartments[id];
-      if (apt) {
-        counts.priorityTotal++;
-        if (apt.status === 'pronto') counts.priorityOk++;
+      if (apartments[id]) {
+        s.priorityTotal++;
+        if (apartments[id].status === 'pronto') s.priorityOk++;
       }
     });
-
-    Object.values(apartments).forEach(apt => {
-      if (counts[apt.status] !== undefined) counts[apt.status]++;
-      else counts['nao-verificado']++;
-      counts.total++;
+    Object.values(apartments).forEach(a => {
+      if (s[a.status] !== undefined) s[a.status]++;
+      else s['nao-verificado']++;
     });
-    return counts;
+    return s;
   }, [apartments]);
 
-  const filteredApartments = useMemo(() => {
-    let list = Object.values(apartments);
-    list.sort((a, b) => parseInt(a.id) - parseInt(b.id));
-
-    if (showOnlyPriority) {
-      list = list.filter(apt => PRIORITY_IDS.includes(apt.id));
+  // Geração da Matriz (Grid)
+  const gridMatrix = useMemo(() => {
+    const matrix = [];
+    for (let f = FLOORS_TOTAL; f >= 1; f--) { // De cima para baixo (18 ao 1)
+      const floorRow = [];
+      for (let u = 1; u <= UNITS_PER_FLOOR; u++) {
+        const id = `${f}${u.toString().padStart(2, '0')}`;
+        floorRow.push(apartments[id] || { id, status: 'nao-verificado' });
+      }
+      matrix.push({ floor: f, units: floorRow });
     }
-    
-    if (statusFilter) {
-      list = list.filter(apt => apt.status === statusFilter);
-    }
+    return matrix;
+  }, [apartments]);
 
-    if (searchTerm) {
-      list = list.filter(apt => 
-        apt.id.includes(searchTerm) || 
-        (apt.notes && apt.notes.toLowerCase().includes(searchTerm.toLowerCase()))
-      );
-    }
-    return list;
-  }, [apartments, searchTerm, showOnlyPriority, statusFilter]);
-
-  const floorsView = useMemo(() => {
-    const groups = {};
-    filteredApartments.forEach(apt => {
-      const floor = apt.id.length === 3 ? apt.id[0] : apt.id.substring(0, 2);
-      if (!groups[floor]) groups[floor] = [];
-      groups[floor].push(apt);
-    });
-    return groups;
-  }, [filteredApartments]);
-
-  const getFloorProgress = (floorApts) => {
-     if (!floorApts || floorApts.length === 0) return 0;
-     const done = floorApts.filter(a => a.status === 'pronto').length;
-     return Math.round((done / floorApts.length) * 100);
-  };
-
-  if (loading) return <div className="flex items-center justify-center h-screen bg-gray-100 text-gray-600 font-medium animate-pulse">Carregando Vistoria...</div>;
+  if (loading) return <div className="flex h-screen items-center justify-center text-xl font-bold text-slate-600">Carregando Painel da Obra...</div>;
 
   return (
-    <div className="min-h-screen bg-gray-100 font-sans flex flex-col">
-      <header className="bg-slate-800 text-white p-4 shadow-lg sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col">
+      
+      {/* --- CABEÇALHO DE COMANDO --- */}
+      <header className="bg-slate-900 text-white shadow-2xl z-20 sticky top-0">
+        <div className="max-w-[1600px] mx-auto p-4">
+          
+          {/* Linha 1: Título e Ações */}
           <div className="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              <ClipboardList className="w-6 h-6 text-indigo-400" />
-              VARGAS 1140
-            </h1>
-            
-            <div className="flex gap-3 w-full md:w-auto">
-                <div className="bg-indigo-600 flex-1 md:flex-none px-4 py-2 rounded-lg shadow-lg flex items-center gap-3 border border-indigo-500">
-                  <div className="p-2 bg-indigo-800 rounded-full">
-                    <Star className="w-5 h-5 text-yellow-400 fill-yellow-400" />
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-indigo-200 font-bold uppercase tracking-wider">Principais</div>
-                    <div className="text-xl font-bold leading-none">
-                      {stats.priorityOk} <span className="text-sm text-indigo-300 font-normal">/ {stats.priorityTotal}</span>
-                    </div>
-                  </div>
-                </div>
+            <div className="flex items-center gap-3">
+              <div className="bg-blue-600 p-2 rounded-lg">
+                <ClipboardList className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-black tracking-tight">VARGAS 1140</h1>
+                <p className="text-xs text-slate-400 font-mono">SISTEMA DE VISTORIA</p>
+              </div>
+            </div>
 
-                <button 
-                  onClick={copyReportToClipboard}
-                  className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white px-4 py-2 rounded-lg shadow-lg flex flex-col items-center justify-center border border-emerald-500 transition-colors min-w-[80px]"
-                >
-                   <Share2 className="w-5 h-5 mb-1" />
-                   <span className="text-[10px] font-bold uppercase">Relatório</span>
-                </button>
+            {/* Placar dos Principais */}
+            <div className="flex items-center gap-4 bg-slate-800 p-2 rounded-lg border border-slate-700">
+              <div className="text-right">
+                <div className="text-[10px] uppercase tracking-widest text-yellow-400 font-bold">Principais</div>
+                <div className="text-xl font-black leading-none text-white">
+                  {stats.priorityOk} <span className="text-sm text-slate-500">/ {stats.priorityTotal}</span>
+                </div>
+              </div>
+              <Star className="w-8 h-8 text-yellow-400 fill-yellow-400" />
+            </div>
+
+            <div className="flex gap-2">
+              <button onClick={() => setShowOnlyPriority(!showOnlyPriority)} className={`px-4 py-2 rounded font-bold text-xs uppercase tracking-wide border ${showOnlyPriority ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-transparent text-yellow-400 border-yellow-400 hover:bg-yellow-400/10'}`}>
+                {showOnlyPriority ? 'Ver Todos' : 'Só Principais'}
+              </button>
+              <button onClick={copyReport} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold text-xs uppercase flex items-center gap-2">
+                <Share2 className="w-4 h-4" /> Relatório
+              </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {Object.entries(STATUS_OPTIONS).map(([key, config]) => (
+          {/* Linha 2: Filtros Visuais (Dashboard) */}
+          <div className="grid grid-cols-4 gap-1 md:gap-4">
+            {Object.entries(STATUS_CONFIG).map(([key, conf]) => (
               <button 
-                key={key} 
+                key={key}
                 onClick={() => setStatusFilter(statusFilter === key ? null : key)}
                 className={`
-                   p-3 rounded-lg border flex items-center justify-between transition-all duration-200
-                   ${statusFilter === key ? 'ring-2 ring-white scale-[1.02] shadow-xl brightness-110' : 'opacity-80 hover:opacity-100'}
-                   ${config.color.replace('bg-', 'bg-opacity-20 bg-').replace('text-white', 'text-white').replace('text-yellow-900', 'text-yellow-100')}
-                   ${statusFilter && statusFilter !== key ? 'opacity-40 grayscale-[0.5]' : ''}
+                  relative overflow-hidden p-2 md:p-3 rounded flex flex-col items-center justify-center transition-all
+                  ${statusFilter === key ? 'ring-2 ring-white ring-offset-2 ring-offset-slate-900' : 'opacity-80 hover:opacity-100'}
+                  ${conf.bg}
                 `}
               >
-                <div className="flex items-center gap-2">
-                    {statusFilter === key && <Filter className="w-3 h-3 animate-bounce" />}
-                    <span className="text-xs font-bold uppercase">{config.label}</span>
-                </div>
-                <span className="text-2xl font-bold">{stats[key]}</span>
+                <span className="text-2xl md:text-3xl font-black text-white drop-shadow-md">{stats[key]}</span>
+                <span className="text-[10px] uppercase font-bold text-white/90">{conf.label}</span>
               </button>
             ))}
           </div>
-          
-          {statusFilter && (
-            <div className="text-center mt-2 animate-in fade-in">
-                <button onClick={() => setStatusFilter(null)} className="text-xs text-slate-300 hover:text-white underline flex items-center justify-center gap-1 mx-auto">
-                    <X className="w-3 h-3" /> Limpar filtro: Exibindo apenas {STATUS_OPTIONS[statusFilter].label}
-                </button>
-            </div>
-          )}
         </div>
       </header>
 
-      <main className="flex-1 p-2 md:p-6">
-        <div className="max-w-7xl mx-auto">
-          <div className="flex flex-col md:flex-row gap-3 mb-6 justify-between items-end bg-white p-3 rounded-xl shadow-sm border border-gray-100">
-             <button 
-               onClick={() => setShowOnlyPriority(!showOnlyPriority)}
-               className={`flex items-center justify-center gap-2 px-4 py-2 rounded-full border text-sm font-medium transition-all w-full md:w-auto ${showOnlyPriority ? 'bg-indigo-100 border-indigo-500 text-indigo-700 ring-2 ring-indigo-200' : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'}`}
-             >
-               <Star className={`w-4 h-4 ${showOnlyPriority ? 'fill-indigo-700' : ''}`} />
-               {showOnlyPriority ? 'Mostrando Apenas Principais' : 'Mostrar Principais'}
-             </button>
-
-             <div className="relative w-full md:w-80">
-               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-               <input 
-                 type="text" 
-                 placeholder="Buscar apto (ex: 304) ou problema..." 
-                 className="w-full pl-9 pr-4 py-2 rounded-full border border-gray-300 shadow-sm focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-gray-50 focus:bg-white transition-colors"
-                 value={searchTerm}
-                 onChange={(e) => setSearchTerm(e.target.value)}
-               />
-             </div>
-          </div>
-
-          <div className="space-y-6 pb-10">
-            {Object.entries(floorsView).sort((a,b) => parseInt(a[0]) - parseInt(b[0])).map(([floor, apts]) => {
-              const progress = getFloorProgress(apts);
-              
-              return (
-                <div key={floor} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                  <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 font-bold text-gray-700 flex justify-between items-center relative overflow-hidden">
-                    <div className="absolute bottom-0 left-0 h-1 bg-green-500 transition-all duration-1000 ease-out" style={{ width: `${progress}%` }} />
-                    
-                    <div className="flex items-center gap-3 z-10">
-                        <span className="text-lg">Andar {floor}</span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${progress === 100 ? 'bg-green-100 text-green-700 border-green-200' : 'bg-white text-gray-500 border-gray-200'}`}>
-                           {progress}% Concluído
-                        </span>
-                    </div>
-                    <span className="text-xs bg-gray-200 px-2 py-1 rounded text-gray-600 z-10">{apts.length} aptos</span>
-                  </div>
-                  
-                  <div className="p-4 grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-3">
-                    {apts.map(apt => {
-                      const isPriority = PRIORITY_IDS.includes(apt.id);
-                      const statusConfig = STATUS_OPTIONS[apt.status];
-                      
-                      return (
-                        <button
-                          key={apt.id}
-                          onClick={() => handleAptClick(apt.id)}
-                          className={`
-                            relative flex flex-col items-center justify-center p-1 rounded-lg border transition-all h-14
-                            ${statusConfig.color} 
-                            ${isPriority ? 'ring-2 ring-indigo-500 ring-offset-1 z-10 shadow-md font-bold' : 'border-transparent opacity-90 hover:opacity-100 hover:scale-105'}
-                          `}
-                        >
-                          {isPriority && (
-                            <div className="absolute -top-2 -right-2 bg-indigo-600 text-white rounded-full p-0.5 shadow-sm z-20">
-                              <Star className="w-3 h-3 fill-yellow-400 text-yellow-400" />
-                            </div>
-                          )}
-                          
-                          <span className="text-sm">{apt.id}</span>
-                          
-                          {apt.notes && (
-                            <div className="absolute bottom-1 w-1.5 h-1.5 bg-white rounded-full animate-pulse shadow-sm" title="Com anotações" />
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-            
-            {Object.keys(floorsView).length === 0 && (
-              <div className="text-center py-20 text-gray-400 bg-white rounded-xl border border-dashed border-gray-300">
-                <Search className="w-12 h-12 mx-auto mb-2 opacity-20" />
-                <p>Nenhum apartamento encontrado com esses filtros.</p>
-                <button onClick={() => {setSearchTerm(''); setStatusFilter(null); setShowOnlyPriority(false)}} className="mt-4 text-indigo-600 hover:underline text-sm">
-                  Limpar todos os filtros
-                </button>
+      {/* --- ÁREA PRINCIPAL (GRID / TABELA) --- */}
+      <main className="flex-1 overflow-x-auto p-2 md:p-6 bg-slate-200">
+        <div className="min-w-[1000px] max-w-[1600px] mx-auto bg-white shadow-xl border border-slate-300 rounded-lg overflow-hidden">
+          
+          {/* Cabeçalho da Tabela */}
+          <div className="flex bg-slate-800 text-white font-mono text-xs border-b border-slate-600 sticky top-0 z-10">
+            <div className="w-16 p-2 flex items-center justify-center font-bold bg-slate-900 shrink-0 border-r border-slate-700">ANDAR</div>
+            {Array.from({ length: UNITS_PER_FLOOR }, (_, i) => i + 1).map(u => (
+              <div key={u} className="flex-1 p-2 text-center border-r border-slate-700 last:border-r-0 font-bold">
+                FINAL {u.toString().padStart(2, '0')}
               </div>
-            )}
+            ))}
           </div>
 
+          {/* Corpo da Tabela */}
+          <div className="divide-y divide-slate-200">
+            {gridMatrix.map(({ floor, units }) => (
+              <div key={floor} className="flex h-12 hover:bg-slate-50 transition-colors">
+                {/* Coluna do Andar */}
+                <div className="w-16 bg-slate-100 flex items-center justify-center font-bold text-slate-600 text-sm border-r border-slate-300 shrink-0">
+                  {floor}º
+                </div>
+
+                {/* Células dos Apartamentos */}
+                {units.map(apt => {
+                  const isPriority = PRIORITY_IDS.includes(apt.id);
+                  const status = STATUS_CONFIG[apt.status];
+                  
+                  // Filtros
+                  if (statusFilter && apt.status !== statusFilter) {
+                    return <div key={apt.id} className="flex-1 bg-slate-100 border-r border-slate-200/50" />;
+                  }
+                  if (showOnlyPriority && !isPriority) {
+                    return <div key={apt.id} className="flex-1 bg-slate-100 border-r border-slate-200/50 opacity-30" />;
+                  }
+
+                  // Célula Ativa
+                  return (
+                    <div 
+                      key={apt.id}
+                      onClick={() => { setSelectedAptId(apt.id); setEditStatus(apt.status); setEditNotes(apt.notes || ''); }}
+                      className={`
+                        flex-1 relative border-r border-white/20 cursor-pointer group transition-all
+                        flex items-center justify-center
+                        ${status.bg}
+                        ${searchTerm && apt.id.includes(searchTerm) ? 'ring-4 ring-purple-500 z-10' : ''}
+                      `}
+                      title={`Apto ${apt.id} - ${status.label}`}
+                    >
+                      <span className="font-mono font-bold text-white text-sm drop-shadow-md group-hover:scale-125 transition-transform">
+                        {apt.id}
+                      </span>
+
+                      {/* Ícone de Prioridade (Estrela) */}
+                      {isPriority && (
+                        <div className="absolute top-0.5 right-0.5">
+                          <Star className="w-2.5 h-2.5 text-yellow-300 fill-yellow-300 drop-shadow-sm" />
+                        </div>
+                      )}
+
+                      {/* Indicador de Notas */}
+                      {apt.notes && (
+                        <div className="absolute bottom-1 w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
         </div>
       </main>
 
+      {/* --- MODAL DE EDIÇÃO (Mantido igual para funcionalidade) --- */}
       {selectedAptId && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all scale-100">
-            <div className="bg-slate-800 text-white p-4 flex justify-between items-center">
-              <div className="flex items-center gap-3">
-                <h2 className="text-xl font-bold">Apto {selectedAptId}</h2>
-                {PRIORITY_IDS.includes(selectedAptId) && (
-                  <span className="bg-indigo-600 text-xs px-2 py-1 rounded-full flex items-center gap-1 shadow-sm border border-indigo-400">
-                    <Star className="w-3 h-3 fill-white" /> Principal
-                  </span>
-                )}
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <h2 className="text-2xl font-black">Apto {selectedAptId}</h2>
+                {PRIORITY_IDS.includes(selectedAptId) && <Star className="w-5 h-5 text-yellow-400 fill-yellow-400" />}
               </div>
-              <button onClick={() => setSelectedAptId(null)} className="hover:bg-slate-700 p-1 rounded transition-colors">
-                <X className="w-6 h-6" />
-              </button>
+              <button onClick={() => setSelectedAptId(null)}><X className="w-6 h-6 hover:text-red-400" /></button>
             </div>
 
-            <div className="p-6 space-y-6">
-              {apartments[selectedAptId]?.updatedAt && (
-                  <div className="text-xs text-gray-500 flex items-center gap-2 bg-gray-50 p-2 rounded border border-gray-100">
-                      <CalendarClock className="w-3 h-3" />
-                      <span>Última vistoria: <strong>{new Date(apartments[selectedAptId].updatedAt).toLocaleString('pt-BR')}</strong></span>
-                  </div>
-              )}
-
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-3">Qual a situação atual?</label>
-                <div className="grid grid-cols-2 gap-3">
-                  {Object.entries(STATUS_OPTIONS).map(([key, config]) => (
-                    <button
-                      key={key}
-                      onClick={() => setEditStatus(key)}
-                      className={`
-                        flex items-center gap-3 p-3 rounded-lg border-2 transition-all text-left
-                        ${editStatus === key ? `border-slate-800 ring-1 ring-slate-800 ${config.color} text-white shadow-md` : 'border-gray-100 hover:bg-gray-50 text-gray-600 hover:border-gray-300'}
-                      `}
-                    >
-                      <div className={`p-1 rounded-full ${editStatus === key ? 'bg-white/20' : 'bg-gray-100'}`}>
-                        <config.icon className="w-5 h-5" />
-                      </div>
-                      <span className="font-medium text-sm">{config.label}</span>
-                    </button>
-                  ))}
-                </div>
+            <div className="p-6">
+              <div className="grid grid-cols-2 gap-3 mb-6">
+                {Object.entries(STATUS_CONFIG).map(([key, conf]) => (
+                  <button
+                    key={key}
+                    onClick={() => setEditStatus(key)}
+                    className={`p-3 rounded font-bold text-sm flex items-center gap-2 border-2 transition-all ${editStatus === key ? `${conf.bg} ${conf.text} border-transparent ring-2 ring-offset-2 ring-slate-900` : 'bg-white border-slate-200 text-slate-600 hover:border-slate-400'}`}
+                  >
+                    <conf.icon className="w-4 h-4" /> {conf.label}
+                  </button>
+                ))}
               </div>
 
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2 flex justify-between">
-                  <span>Pendências / Observações</span>
-                  <span className="text-xs font-normal text-gray-400">Opcional</span>
-                </label>
-                <textarea
-                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 min-h-[120px] text-gray-800 text-sm resize-none bg-gray-50 focus:bg-white transition-colors"
-                  placeholder="Ex: Acabamento da porta, metais, pintura manchada..."
-                  value={editNotes}
-                  onChange={(e) => setEditNotes(e.target.value)}
-                />
-              </div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Pendências</label>
+              <textarea
+                className="w-full p-3 bg-slate-50 border border-slate-300 rounded h-32 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none"
+                placeholder="Escreva aqui..."
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+              />
 
-              <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
-                <button onClick={() => setSelectedAptId(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors">Cancelar</button>
-                <button onClick={handleSave} className="px-6 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 font-medium flex items-center gap-2 shadow-lg transform active:scale-95 transition-all">
-                  <Save className="w-4 h-4" /> Salvar Vistoria
-                </button>
-              </div>
+              <button onClick={handleSave} className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded font-bold text-lg flex items-center justify-center gap-2">
+                <Save className="w-5 h-5" /> Salvar
+              </button>
             </div>
           </div>
         </div>
