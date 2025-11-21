@@ -3,8 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
   signInAnonymously, 
-  onAuthStateChanged,
-  signInWithCustomToken
+  onAuthStateChanged
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -32,26 +31,33 @@ import {
 
 // --- Cole sua configuração aqui ---
 const firebaseConfig = {
-  apiKey: "AIzaSyCXUG9VanJhe-huto707XTszRMCOjmzvA0",
-  authDomain: "vargascury1140.firebaseapp.com",
-  projectId: "vargascury1140",
-  storageBucket: "vargascury1140.firebasestorage.app",
-  messagingSenderId: "248969218430",
-  appId: "1:248969218430:web:6ffaee66a679c93659cb2f",
-  measurementId: "G-ZWHG09M19B"
-};
+    apiKey: "AIzaSyCXUG9VanJhe-huto707XTszRMCOjmzvA0",
+    authDomain: "vargascury1140.firebaseapp.com",
+    projectId: "vargascury1140",
+    storageBucket: "vargascury1140.firebasestorage.app",
+    messagingSenderId: "248969218430",
+    appId: "1:248969218430:web:6ffaee66a679c93659cb2f",
+    measurementId: "G-ZWHG09M19B"
+  };
 
-// --- Configuração do Firebase ---
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+// Inicializa o Firebase apenas se a config estiver preenchida
+let app, auth, db;
+try {
+  if (firebaseConfig.apiKey) {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  }
+} catch (e) {
+  console.error("Erro ao inicializar Firebase. Verifique a configuração.");
+}
 
 // --- Definições de Negócio ---
 const STATUS_OPTIONS = {
-  'nao-verificado': { label: 'Não Verificado', color: 'bg-yellow-400 text-yellow-900', icon: HelpCircle, hex: '#FACC15' },
-  'dificil': { label: 'Difícil de Zerar', color: 'bg-red-600 text-white', icon: XCircle, hex: '#DC2626' },
-  'facil': { label: 'Fácil de Zerar', color: 'bg-cyan-500 text-white', icon: AlertCircle, hex: '#06B6D4' },
-  'pronto': { label: 'Prontos', color: 'bg-green-600 text-white', icon: CheckCircle2, hex: '#16A34A' },
+  'nao-verificado': { label: 'Não Verificado', color: 'bg-yellow-400 text-yellow-900', icon: HelpCircle },
+  'dificil': { label: 'Difícil de Zerar', color: 'bg-red-600 text-white', icon: XCircle },
+  'facil': { label: 'Fácil de Zerar', color: 'bg-cyan-500 text-white', icon: AlertCircle },
+  'pronto': { label: 'Prontos', color: 'bg-green-600 text-white', icon: CheckCircle2 },
 };
 
 const PRIORITY_IDS = [
@@ -89,13 +95,29 @@ export default function App() {
   const [showOnlyPriority, setShowOnlyPriority] = useState(false);
   const [statusFilter, setStatusFilter] = useState(null);
 
-  // --- Autenticação e Carregamento ---
+  // Se o firebase não estiver configurado, mostra aviso
+  if (!app) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-red-50 p-10 text-center font-sans">
+        <div className="max-w-md bg-white p-6 rounded-xl shadow-lg border border-red-200">
+          <h1 className="text-2xl font-bold text-red-700 mb-4">⚠️ Configuração Pendente</h1>
+          <p className="text-gray-600 mb-4">
+            Você precisa colar suas chaves do Firebase no início do arquivo <code>src/App.jsx</code>.
+          </p>
+          <p className="text-sm text-gray-500">
+            Procure por <code>const firebaseConfig = ...</code> e substitua pelo código que você copiou do site do Firebase.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   useEffect(() => {
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
+      try {
         await signInAnonymously(auth);
+      } catch (err) {
+        console.error("Erro na autenticação:", err);
       }
     };
     initAuth();
@@ -105,9 +127,8 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    // Usando a coleção v2 para garantir que a estrutura nova seja carregada
     const unsubscribe = onSnapshot(
-      collection(db, 'artifacts', appId, 'public', 'data', 'vargas_apartments_v2'),
+      collection(db, 'vargas_vistoria_data'),
       (snapshot) => {
         const data = {};
         snapshot.forEach((doc) => {
@@ -118,7 +139,8 @@ export default function App() {
           setApartments(data);
           setLoading(false);
         }
-      }
+      },
+      (error) => console.error("Erro ao buscar dados:", error)
     );
     return () => unsubscribe();
   }, [user]);
@@ -130,7 +152,7 @@ export default function App() {
     for (let floor = 1; floor <= FLOORS_TOTAL; floor++) {
       for (let unit = 1; unit <= UNITS_PER_FLOOR; unit++) {
         const aptId = `${floor}${unit.toString().padStart(2, '0')}`;
-        const ref = doc(db, 'artifacts', appId, 'public', 'data', 'vargas_apartments_v2', aptId);
+        const ref = doc(db, 'vargas_vistoria_data', aptId);
         batch.set(ref, {
           id: aptId,
           status: 'nao-verificado',
@@ -148,7 +170,6 @@ export default function App() {
     setLoading(false);
   };
 
-  // --- Ações ---
   const handleAptClick = (aptId) => {
     const apt = apartments[aptId] || { status: 'nao-verificado', notes: '' };
     setSelectedAptId(aptId);
@@ -160,24 +181,23 @@ export default function App() {
     if (!user || !selectedAptId) return;
     try {
       await setDoc(
-        doc(db, 'artifacts', appId, 'public', 'data', 'vargas_apartments_v2', selectedAptId),
+        doc(db, 'vargas_vistoria_data', selectedAptId),
         {
           id: selectedAptId,
           status: editStatus,
           notes: editNotes,
           updatedAt: new Date().toISOString(),
-          updatedBy: user.uid, 
+          updatedBy: "Usuário", 
           isPriority: PRIORITY_IDS.includes(selectedAptId)
         },
         { merge: true }
       );
       setSelectedAptId(null);
     } catch (error) {
-      alert("Erro ao salvar.");
+      alert("Erro ao salvar no banco de dados.");
     }
   };
 
-  // --- Gerador de Relatório WhatsApp ---
   const copyReportToClipboard = () => {
     const today = new Date().toLocaleDateString('pt-BR');
     const now = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -201,28 +221,19 @@ export default function App() {
       text += "🎉 Nenhuma pendência registrada no momento!";
     }
 
-    // Tentativa de usar a API de clipboard de forma segura
-    try {
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textArea);
-        alert("📋 Relatório copiado! Pode colar no WhatsApp.");
-    } catch (err) {
-        alert("Erro ao copiar automaticamente. Tente manualmente.");
-    }
+    navigator.clipboard.writeText(text).then(() => {
+      alert("📋 Relatório copiado! Pode colar no WhatsApp.");
+    }).catch(() => {
+      alert("Erro ao copiar. Tente selecionar e copiar manualmente.");
+    });
   };
 
-  // --- Estatísticas ---
   const stats = useMemo(() => {
     const counts = {
       'pronto': 0, 'facil': 0, 'dificil': 0, 'nao-verificado': 0,
       total: 0, priorityTotal: 0, priorityOk: 0
     };
     
-    // Garantir contagem correta dos principais
     PRIORITY_IDS.forEach(id => {
       const apt = apartments[id];
       if (apt) {
@@ -239,7 +250,6 @@ export default function App() {
     return counts;
   }, [apartments]);
 
-  // --- Filtragem ---
   const filteredApartments = useMemo(() => {
     let list = Object.values(apartments);
     list.sort((a, b) => parseInt(a.id) - parseInt(b.id));
@@ -271,7 +281,6 @@ export default function App() {
     return groups;
   }, [filteredApartments]);
 
-  // Calculo de progresso por andar (para visualização)
   const getFloorProgress = (floorApts) => {
      if (!floorApts || floorApts.length === 0) return 0;
      const done = floorApts.filter(a => a.status === 'pronto').length;
@@ -284,7 +293,6 @@ export default function App() {
     <div className="min-h-screen bg-gray-100 font-sans flex flex-col">
       <header className="bg-slate-800 text-white p-4 shadow-lg sticky top-0 z-30">
         <div className="max-w-7xl mx-auto">
-          {/* Top Bar: Título e Ações Principais */}
           <div className="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
             <h1 className="text-2xl font-bold flex items-center gap-2">
               <ClipboardList className="w-6 h-6 text-indigo-400" />
@@ -292,7 +300,6 @@ export default function App() {
             </h1>
             
             <div className="flex gap-3 w-full md:w-auto">
-                {/* Card de Principais */}
                 <div className="bg-indigo-600 flex-1 md:flex-none px-4 py-2 rounded-lg shadow-lg flex items-center gap-3 border border-indigo-500">
                   <div className="p-2 bg-indigo-800 rounded-full">
                     <Star className="w-5 h-5 text-yellow-400 fill-yellow-400" />
@@ -305,11 +312,9 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Botão Relatório WhatsApp */}
                 <button 
                   onClick={copyReportToClipboard}
                   className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white px-4 py-2 rounded-lg shadow-lg flex flex-col items-center justify-center border border-emerald-500 transition-colors min-w-[80px]"
-                  title="Copiar Relatório para WhatsApp"
                 >
                    <Share2 className="w-5 h-5 mb-1" />
                    <span className="text-[10px] font-bold uppercase">Relatório</span>
@@ -317,7 +322,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Filtros de Status Clicáveis */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {Object.entries(STATUS_OPTIONS).map(([key, config]) => (
               <button 
@@ -351,8 +355,6 @@ export default function App() {
 
       <main className="flex-1 p-2 md:p-6">
         <div className="max-w-7xl mx-auto">
-          
-          {/* Barra de Busca e Filtro Principal */}
           <div className="flex flex-col md:flex-row gap-3 mb-6 justify-between items-end bg-white p-3 rounded-xl shadow-sm border border-gray-100">
              <button 
                onClick={() => setShowOnlyPriority(!showOnlyPriority)}
@@ -374,16 +376,13 @@ export default function App() {
              </div>
           </div>
 
-          {/* Grid de Andares */}
           <div className="space-y-6 pb-10">
             {Object.entries(floorsView).sort((a,b) => parseInt(a[0]) - parseInt(b[0])).map(([floor, apts]) => {
               const progress = getFloorProgress(apts);
               
               return (
                 <div key={floor} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                  {/* Cabeçalho do Andar com Barra de Progresso */}
                   <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 font-bold text-gray-700 flex justify-between items-center relative overflow-hidden">
-                    {/* Barra de Progresso de Fundo */}
                     <div className="absolute bottom-0 left-0 h-1 bg-green-500 transition-all duration-1000 ease-out" style={{ width: `${progress}%` }} />
                     
                     <div className="flex items-center gap-3 z-10">
@@ -443,7 +442,6 @@ export default function App() {
         </div>
       </main>
 
-      {/* Modal de Edição */}
       {selectedAptId && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all scale-100">
@@ -462,7 +460,6 @@ export default function App() {
             </div>
 
             <div className="p-6 space-y-6">
-              
               {apartments[selectedAptId]?.updatedAt && (
                   <div className="text-xs text-gray-500 flex items-center gap-2 bg-gray-50 p-2 rounded border border-gray-100">
                       <CalendarClock className="w-3 h-3" />
