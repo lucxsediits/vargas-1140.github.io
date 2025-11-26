@@ -17,7 +17,8 @@ import {
   limit,
   writeBatch,
   updateDoc,
-  arrayUnion
+  arrayUnion,
+  where
 } from 'firebase/firestore';
 import {
   getStorage,
@@ -53,7 +54,8 @@ import {
   BarChart3,   // Dashboard
   CheckSquare, // Seleção em Lote
   Trash2,
-  Loader2
+  Loader2,
+  Send         // Ícone Enviar
 } from 'lucide-react';
 
 // ------------------------------------------------------------------
@@ -96,25 +98,10 @@ const STATUS_CONFIG = {
   'pronto': { label: 'Pronto', bg: 'bg-emerald-500', text: 'text-white', border: 'border-emerald-600', icon: CheckCircle2, excelColor: '#00B050', excelText: '#FFFFFF' },
 };
 
-const PRIORITY_IDS = [
+// Lista estática usada APENAS para inicialização de banco vazio
+const INITIAL_PRIORITY_IDS = [
   '102','103','104','105','106','110','113','115','117','119','120',
-  '201','202','203','204','205','210','213','214','215','217','218','219','220',
-  '301','304','305','306','307','309','313','314','315','318','320',
-  '402','403','404','413','414','415','416','417','418','419',
-  '501','502','503','504','505','506','510','511','513','514','515','516','520',
-  '601','602','603','617','618',
-  '701','705','706','708','709','712','713','719','720',
-  '801','802','805','810','813','815','816','817','818','819',
-  '901','902','903','904','905','906','910','912','913','914','916','917','918','919','920',
-  '1001','1002','1004','1005','1006','1013','1015','1016','1017','1019',
-  '1102','1103','1104','1105','1106','1107','1108','1110','1111','1112','1113','1114','1115','1117','1119','1120',
-  '1202','1203','1205','1206','1207','1208','1212','1214','1215','1217','1218','1219','1220',
-  '1301','1302','1304','1305','1306','1313','1314','1315','1317','1318',
-  '1401','1404','1406','1407','1408','1412','1414','1415','1416','1417','1418','1420',
-  '1501','1504','1506','1507','1510','1511','1512','1514','1517','1519','1520',
-  '1602','1603','1604','1606','1608','1613','1614','1615','1616','1618','1619',
-  '1702','1703','1705','1711','1712','1715','1718','1719','1720',
-  '1801','1802','1803','1810','1811','1814','1815','1818','1819','1820'
+  '201','202','203','204','205','210','213','214','215','217','218','219','220'
 ];
 
 const FLOORS_TOTAL = 18;
@@ -131,11 +118,13 @@ export default function App() {
   const [selectedAptId, setSelectedAptId] = useState(null);
   const [editNotes, setEditNotes] = useState('');
   const [editStatus, setEditStatus] = useState('nao-verificado');
+  const [editPriority, setEditPriority] = useState(false); // NOVO ESTADO
   const [editCivil, setEditCivil] = useState(false);
   const [editInstall, setEditInstall] = useState(false);
   const [editQuality, setEditQuality] = useState(false);
   const [editPhotos, setEditPhotos] = useState([]); // Array de URLs
   const [isUploading, setIsUploading] = useState(false);
+  const [aptLogs, setAptLogs] = useState([]); // Logs específicos do apto
   const fileInputRef = useRef(null);
   
   // Filtros e Busca
@@ -177,6 +166,7 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
+  // Busca logs globais
   useEffect(() => {
     if (!user || !showLogsModal) return;
     const q = query(collection(db, 'activity_logs'), orderBy('timestamp', 'desc'), limit(50));
@@ -187,6 +177,26 @@ export default function App() {
     });
     return () => unsubscribe();
   }, [user, showLogsModal]);
+
+  // Busca logs ESPECÍFICOS do apartamento selecionado
+  useEffect(() => {
+    if (!user || !selectedAptId) {
+        setAptLogs([]);
+        return;
+    }
+    const q = query(
+        collection(db, 'activity_logs'), 
+        where('target', '==', selectedAptId),
+        orderBy('timestamp', 'desc'), 
+        limit(10)
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const logsData = [];
+      snapshot.forEach((doc) => logsData.push({ id: doc.id, ...doc.data() }));
+      setAptLogs(logsData);
+    });
+    return () => unsubscribe();
+  }, [user, selectedAptId]);
 
   const logAction = async (action, target, details) => {
     try {
@@ -225,7 +235,7 @@ export default function App() {
           id, 
           status: 'nao-verificado', 
           notes: '', 
-          isPriority: PRIORITY_IDS.includes(id),
+          isPriority: INITIAL_PRIORITY_IDS.includes(id), // Usa lista inicial apenas no reset
           pendencyCivil: false,
           pendencyInstall: false,
           pendencyQuality: false,
@@ -252,19 +262,38 @@ export default function App() {
       pendencyCivil: editCivil,
       pendencyInstall: editInstall,
       pendencyQuality: editQuality,
+      isPriority: editPriority, // Salva o valor editado, não a lista fixa
       updatedAt: new Date().toISOString(),
       updatedBy: currentUserData,
-      isPriority: PRIORITY_IDS.includes(selectedAptId)
     }, { merge: true });
 
     const pendencies = [];
     if (editCivil) pendencies.push("Civil");
     if (editInstall) pendencies.push("Install");
     if (editQuality) pendencies.push("Quality");
-    const pendencyText = pendencies.length > 0 ? `| Pendências: ${pendencies.join(', ')}` : '';
+    if (editPriority) pendencies.push("PRIORIDADE");
+    const pendencyText = pendencies.length > 0 ? `| ${pendencies.join(', ')}` : '';
 
     await logAction('EDITAR', selectedAptId, `Status: ${editStatus} ${pendencyText} | Obs: ${editNotes}`);
     setSelectedAptId(null);
+  };
+
+  const shareIndividualStatus = () => {
+    const pendencies = [];
+    if (editCivil) pendencies.push("Civil");
+    if (editInstall) pendencies.push("Install");
+    if (editQuality) pendencies.push("Quality");
+    if (editPriority) pendencies.push("PRIORIDADE ⭐");
+    
+    const text = `*VARGAS 1140 - APTO ${selectedAptId}*
+Status: ${STATUS_CONFIG[editStatus].label.toUpperCase()}
+${pendencies.length ? `Marcadores: ${pendencies.join(', ')}` : ''}
+${editNotes ? `Obs: ${editNotes}` : ''}
+    
+Enviado por: ${currentUserData}`;
+    
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
   };
 
   // --- LÓGICA DE FOTOS ---
@@ -316,6 +345,7 @@ export default function App() {
       if (field === 'civil') updateData.pendencyCivil = value;
       if (field === 'install') updateData.pendencyInstall = value;
       if (field === 'quality') updateData.pendencyQuality = value;
+      if (field === 'priority') updateData.isPriority = value;
 
       // Garante que o documento exista (merge)
       batch.set(ref, { id, ...updateData }, { merge: true });
@@ -343,14 +373,15 @@ export default function App() {
       <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
       <head><meta charset="UTF-8"></head><body><table>
       <tr><td colspan="10" style="font-weight:bold; font-size:16px;">RELATÓRIO VARGAS 1140 - Gerado por ${currentUserData}</td></tr>
-      <tr><td>Andar</td><td>Apto</td><td>Status</td><td>Cury Civil</td><td>Cury Install</td><td>Quality</td><td>Fotos</td><td>Obs</td></tr>
+      <tr><td>Andar</td><td>Apto</td><td>Status</td><td>Prioridade</td><td>Cury Civil</td><td>Cury Install</td><td>Quality</td><td>Fotos</td><td>Obs</td></tr>
     `;
     Object.values(apartments).forEach(apt => {
         const civil = apt.pendencyCivil ? "SIM" : "";
         const install = apt.pendencyInstall ? "SIM" : "";
         const quality = apt.pendencyQuality ? "SIM" : "";
+        const priority = apt.isPriority ? "SIM" : "";
         const hasPhotos = apt.photos && apt.photos.length > 0 ? `${apt.photos.length} fotos` : "";
-        html += `<tr><td>${apt.id.substring(0, apt.id.length-2)}</td><td>${apt.id}</td><td>${apt.status}</td><td>${civil}</td><td>${install}</td><td>${quality}</td><td>${hasPhotos}</td><td>${apt.notes || ''}</td></tr>`;
+        html += `<tr><td>${apt.id.substring(0, apt.id.length-2)}</td><td>${apt.id}</td><td>${apt.status}</td><td>${priority}</td><td>${civil}</td><td>${install}</td><td>${quality}</td><td>${hasPhotos}</td><td>${apt.notes || ''}</td></tr>`;
     });
     html += `</table></body></html>`;
     const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
@@ -388,7 +419,12 @@ export default function App() {
       const floorRow = [];
       for (let u = 1; u <= UNITS_PER_FLOOR; u++) {
         const id = `${f}${u.toString().padStart(2, '0')}`;
-        floorRow.push(apartments[id] || { id, status: 'nao-verificado' });
+        // Inicializa prioridade com dados do banco, ou lista fixa se ainda não existir no banco
+        floorRow.push(apartments[id] || { 
+            id, 
+            status: 'nao-verificado',
+            isPriority: INITIAL_PRIORITY_IDS.includes(id) 
+        });
       }
       matrix.push({ floor: f, units: floorRow });
     }
@@ -501,7 +537,7 @@ export default function App() {
 
         {gridMatrix.map(({ floor, units }) => {
           const unitsFiltered = units.filter(apt => {
-            const isPriority = PRIORITY_IDS.includes(apt.id);
+            const isPriority = apt.isPriority; // Usa o dado real do objeto (que vem do banco ou do init)
             if (searchTerm && !apt.id.includes(searchTerm)) return false;
             if (showOnlyPriority && !isPriority) return false;
             if (statusFilter && apt.status !== statusFilter) return false;
@@ -533,7 +569,6 @@ export default function App() {
               {isOpen && (
                 <div className="p-4 grid grid-cols-4 sm:grid-cols-5 md:grid-cols-10 gap-2 sm:gap-3 bg-slate-50/50">
                   {unitsFiltered.map(apt => {
-                    const isPriority = PRIORITY_IDS.includes(apt.id);
                     const status = STATUS_CONFIG[apt.status];
                     const isSelected = selectedBatchIds.includes(apt.id);
                     
@@ -547,6 +582,7 @@ export default function App() {
                                 setSelectedAptId(apt.id); 
                                 setEditStatus(apt.status); 
                                 setEditNotes(apt.notes || ''); 
+                                setEditPriority(apt.isPriority || false); // Carrega prioridade atual
                                 setEditCivil(apt.pendencyCivil || false);
                                 setEditInstall(apt.pendencyInstall || false);
                                 setEditQuality(apt.pendencyQuality || false);
@@ -569,7 +605,7 @@ export default function App() {
                             {apt.photos?.length > 0 && <div className="bg-slate-700 rounded-sm p-[1px]"><Camera className="w-2 h-2 text-white" /></div>}
                         </div>
 
-                        {isPriority && <div className="absolute -top-1.5 -right-1.5 bg-yellow-400 text-black rounded-full p-0.5 shadow-sm border border-white z-10"><Star className="w-2.5 h-2.5 fill-black" /></div>}
+                        {apt.isPriority && <div className="absolute -top-1.5 -right-1.5 bg-yellow-400 text-black rounded-full p-0.5 shadow-sm border border-white z-10"><Star className="w-2.5 h-2.5 fill-black" /></div>}
                         
                         {isBatchMode && isSelected && (
                              <div className="absolute inset-0 bg-blue-500/30 flex items-center justify-center z-20">
@@ -592,9 +628,8 @@ export default function App() {
               <div className="text-white font-bold mb-2 text-sm">{selectedBatchIds.length} selecionados</div>
               <div className="flex gap-2 overflow-x-auto w-full justify-center">
                   <button onClick={() => handleBatchAction('status', 'pronto')} className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded font-bold text-xs uppercase">Marcar Pronto</button>
-                  <button onClick={() => handleBatchAction('civil', true)} className="bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded font-bold text-xs uppercase flex items-center gap-1"><Hammer className="w-3 h-3"/> + Civil</button>
-                  <button onClick={() => handleBatchAction('install', true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded font-bold text-xs uppercase flex items-center gap-1"><Wrench className="w-3 h-3"/> + Install</button>
-                  <button onClick={() => handleBatchAction('quality', true)} className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded font-bold text-xs uppercase flex items-center gap-1"><Paintbrush className="w-3 h-3"/> + Quality</button>
+                  <button onClick={() => handleBatchAction('priority', true)} className="bg-yellow-500 text-black px-4 py-2 rounded font-bold text-xs uppercase flex items-center gap-1"><Star className="w-3 h-3 fill-black"/> + Vip</button>
+                  <button onClick={() => handleBatchAction('priority', false)} className="bg-slate-600 text-white px-4 py-2 rounded font-bold text-xs uppercase flex items-center gap-1"><Star className="w-3 h-3"/> - Vip</button>
               </div>
           </div>
       )}
@@ -676,8 +711,21 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
             <div className="bg-slate-800 p-5 flex justify-between items-center shrink-0">
-              <h2 className="text-3xl font-black text-white">{selectedAptId}</h2>
-              <button onClick={() => setSelectedAptId(null)}><X className="w-6 h-6 text-slate-400 hover:text-white" /></button>
+              <div className="flex flex-col">
+                  <h2 className="text-3xl font-black text-white">{selectedAptId}</h2>
+                  <div className="flex gap-2 mt-1">
+                      <button 
+                          onClick={() => setEditPriority(!editPriority)} 
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 transition-all ${editPriority ? 'bg-yellow-400 text-black hover:bg-yellow-300' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                      >
+                          <Star className={`w-3 h-3 ${editPriority ? 'fill-black' : ''}`}/> {editPriority ? 'PRIORIDADE' : 'NORMAL'}
+                      </button>
+                  </div>
+              </div>
+              <div className="flex gap-2">
+                  <button onClick={shareIndividualStatus} className="bg-emerald-600 hover:bg-emerald-500 text-white p-2 rounded-lg" title="Compartilhar no Zap"><Share2 className="w-5 h-5"/></button>
+                  <button onClick={() => setSelectedAptId(null)} className="bg-slate-700 hover:bg-slate-600 text-white p-2 rounded-lg"><X className="w-5 h-5" /></button>
+              </div>
             </div>
             
             <div className="p-6 overflow-y-auto">
@@ -743,7 +791,27 @@ export default function App() {
               <textarea className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl h-24 text-sm outline-none resize-none text-slate-700"
                 value={editNotes} onChange={(e) => setEditNotes(e.target.value)} placeholder="Detalhes..." />
               
-              <button onClick={handleSave} className="w-full mt-6 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-2 shadow-lg">
+              {/* HISTÓRICO RECENTE */}
+              <div className="mt-6 mb-4">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><History className="w-3 h-3"/> Histórico Recente</h4>
+                  <div className="bg-slate-50 rounded-xl border border-slate-200 max-h-40 overflow-y-auto">
+                      {aptLogs.length === 0 ? (
+                          <div className="p-4 text-xs text-slate-400 text-center italic">Nenhuma atividade recente.</div>
+                      ) : (
+                          aptLogs.map((log) => (
+                              <div key={log.id} className="p-3 border-b border-slate-100 last:border-0 text-xs">
+                                  <div className="flex justify-between mb-1">
+                                      <span className="font-bold text-blue-700">{log.user}</span>
+                                      <span className="text-slate-400 text-[10px]">{new Date(log.timestamp).toLocaleDateString()} {new Date(log.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                  </div>
+                                  <div className="text-slate-600">{log.details}</div>
+                              </div>
+                          ))
+                      )}
+                  </div>
+              </div>
+
+              <button onClick={handleSave} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-2 shadow-lg">
                 <Save className="w-5 h-5" /> SALVAR ALTERAÇÃO
               </button>
             </div>
