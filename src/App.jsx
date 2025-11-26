@@ -504,7 +504,7 @@ Enviado por: ${currentUserData}`;
                     <Paintbrush className="w-3 h-3" /> Quality
                 </button>
                 <button onClick={() => setShowOnlyPriority(!showOnlyPriority)} className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase flex items-center gap-2 border whitespace-nowrap transition-all ${showOnlyPriority ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
-                    <Star className="w-3 h-3" /> Vip
+                    <Star className="w-3 h-3" /> Prioridade
                 </button>
             </div>
 
