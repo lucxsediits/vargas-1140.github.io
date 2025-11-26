@@ -35,7 +35,10 @@ import {
   Database,
   History,
   UserCircle2,
-  LogOut
+  LogOut,
+  Hammer,      // Icone Civil
+  Wrench,      // Icone Install
+  Paintbrush   // Icone Quality (Alterado para Pincel)
 } from 'lucide-react';
 
 // ------------------------------------------------------------------
@@ -111,6 +114,11 @@ export default function App() {
   const [selectedAptId, setSelectedAptId] = useState(null);
   const [editNotes, setEditNotes] = useState('');
   const [editStatus, setEditStatus] = useState('nao-verificado');
+  
+  // Novos estados para as responsabilidades
+  const [editCivil, setEditCivil] = useState(false);
+  const [editInstall, setEditInstall] = useState(false);
+  const [editQuality, setEditQuality] = useState(false);
   
   const [showOnlyPriority, setShowOnlyPriority] = useState(false);
   const [statusFilter, setStatusFilter] = useState(null);
@@ -196,7 +204,13 @@ export default function App() {
       for (let u = 1; u <= UNITS_PER_FLOOR; u++) {
         const id = `${f}${u.toString().padStart(2, '0')}`;
         batch.set(doc(db, 'vargas_vistoria_data', id), {
-          id, status: 'nao-verificado', notes: '', isPriority: PRIORITY_IDS.includes(id)
+          id, 
+          status: 'nao-verificado', 
+          notes: '', 
+          isPriority: PRIORITY_IDS.includes(id),
+          pendencyCivil: false,
+          pendencyInstall: false,
+          pendencyQuality: false
         }, { merge: true });
         op++;
         if (op >= 450) { await batch.commit(); op = 0; }
@@ -214,18 +228,27 @@ export default function App() {
   const handleSave = async () => {
     if (!user || !selectedAptId) return;
 
-    // Salva Apto
+    // Salva Apto com novas pendencias
     await setDoc(doc(db, 'vargas_vistoria_data', selectedAptId), {
       id: selectedAptId,
       status: editStatus,
       notes: editNotes,
+      pendencyCivil: editCivil,
+      pendencyInstall: editInstall,
+      pendencyQuality: editQuality,
       updatedAt: new Date().toISOString(),
       updatedBy: currentUserData,
       isPriority: PRIORITY_IDS.includes(selectedAptId)
     }, { merge: true });
 
-    // Registra Log
-    await logAction('EDITAR', selectedAptId, `Status: ${editStatus} | Obs: ${editNotes}`);
+    // Registra Log detalhado
+    const pendencies = [];
+    if (editCivil) pendencies.push("Civil");
+    if (editInstall) pendencies.push("Install");
+    if (editQuality) pendencies.push("Quality");
+    const pendencyText = pendencies.length > 0 ? `| Pendências: ${pendencies.join(', ')}` : '';
+
+    await logAction('EDITAR', selectedAptId, `Status: ${editStatus} ${pendencyText} | Obs: ${editNotes}`);
 
     setSelectedAptId(null);
   };
@@ -239,20 +262,37 @@ export default function App() {
 
   const exportToExcel = () => {
     const dataHoje = new Date().toLocaleDateString('pt-BR');
-    const aptsPendentes = Object.values(apartments)
-      .filter(a => a.notes && a.notes.trim().length > 0)
-      .sort((a, b) => parseInt(a.id) - parseInt(b.id));
-
+    
     let html = `
       <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
       <head><meta charset="UTF-8"></head><body><table>
       <tr><td colspan="10" style="font-weight:bold; font-size:16px;">RELATÓRIO VARGAS 1140 - Gerado por ${currentUserData}</td></tr>
-      <tr><td>Andar</td><td>Apto</td><td>Status</td><td>Obs</td></tr>
+      <tr>
+        <td>Andar</td>
+        <td>Apto</td>
+        <td>Status</td>
+        <td>Cury Civil</td>
+        <td>Cury Install</td>
+        <td>Quality</td>
+        <td>Obs</td>
+      </tr>
     `;
     
     // Simplificado para o exemplo (mas mantendo funcionalidade)
     Object.values(apartments).forEach(apt => {
-        html += `<tr><td>${apt.id.substring(0, apt.id.length-2)}</td><td>${apt.id}</td><td>${apt.status}</td><td>${apt.notes || ''}</td></tr>`;
+        const civil = apt.pendencyCivil ? "SIM" : "";
+        const install = apt.pendencyInstall ? "SIM" : "";
+        const quality = apt.pendencyQuality ? "SIM" : "";
+        
+        html += `<tr>
+            <td>${apt.id.substring(0, apt.id.length-2)}</td>
+            <td>${apt.id}</td>
+            <td>${apt.status}</td>
+            <td>${civil}</td>
+            <td>${install}</td>
+            <td>${quality}</td>
+            <td>${apt.notes || ''}</td>
+        </tr>`;
     });
 
     html += `</table></body></html>`;
@@ -427,7 +467,16 @@ export default function App() {
                     const isPriority = PRIORITY_IDS.includes(apt.id);
                     const status = STATUS_CONFIG[apt.status];
                     return (
-                      <button key={apt.id} onClick={() => { setSelectedAptId(apt.id); setEditStatus(apt.status); setEditNotes(apt.notes || ''); }}
+                      <button 
+                        key={apt.id} 
+                        onClick={() => { 
+                            setSelectedAptId(apt.id); 
+                            setEditStatus(apt.status); 
+                            setEditNotes(apt.notes || ''); 
+                            setEditCivil(apt.pendencyCivil || false);
+                            setEditInstall(apt.pendencyInstall || false);
+                            setEditQuality(apt.pendencyQuality || false);
+                        }}
                         className={`relative h-14 rounded-lg border-2 flex items-center justify-center transition-all ${status.bg} ${status.border} ${status.text} hover:scale-105 hover:shadow-lg`}>
                         <span className="font-black text-sm">{apt.id}</span>
                         {isPriority && <div className="absolute -top-1.5 -right-1.5 bg-yellow-400 text-black rounded-full p-0.5 shadow-sm border border-white z-10"><Star className="w-2.5 h-2.5 fill-black" /></div>}
@@ -467,12 +516,13 @@ export default function App() {
       {/* --- MODAL DE EDIÇÃO --- */}
       {selectedAptId && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="bg-slate-800 p-5 flex justify-between items-center">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-slate-800 p-5 flex justify-between items-center shrink-0">
               <h2 className="text-3xl font-black text-white">{selectedAptId}</h2>
               <button onClick={() => setSelectedAptId(null)}><X className="w-6 h-6 text-slate-400 hover:text-white" /></button>
             </div>
-            <div className="p-6">
+            
+            <div className="p-6 overflow-y-auto">
               <label className="block text-xs font-bold text-slate-400 uppercase mb-3">Alterar Status</label>
               <div className="grid grid-cols-2 gap-3 mb-6">
                 {Object.entries(STATUS_CONFIG).map(([key, conf]) => (
@@ -482,9 +532,39 @@ export default function App() {
                   </button>
                 ))}
               </div>
+
+              <div className="mb-6 p-4 bg-slate-50 rounded-xl border border-slate-100">
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
+                    Responsabilidade / Pendências
+                  </label>
+                  <div className="flex flex-col gap-2">
+                      <button onClick={() => setEditCivil(!editCivil)} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${editCivil ? 'bg-orange-100 border-orange-300 text-orange-800' : 'bg-white border-slate-200 text-slate-400 hover:border-orange-200'}`}>
+                          <div className="flex items-center gap-2 font-bold text-sm">
+                              <Hammer className="w-4 h-4"/> Cury Civil
+                          </div>
+                          {editCivil && <CheckCircle2 className="w-4 h-4 text-orange-600"/>}
+                      </button>
+
+                      <button onClick={() => setEditInstall(!editInstall)} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${editInstall ? 'bg-blue-100 border-blue-300 text-blue-800' : 'bg-white border-slate-200 text-slate-400 hover:border-blue-200'}`}>
+                          <div className="flex items-center gap-2 font-bold text-sm">
+                              <Wrench className="w-4 h-4"/> Cury Install
+                          </div>
+                          {editInstall && <CheckCircle2 className="w-4 h-4 text-blue-600"/>}
+                      </button>
+
+                      <button onClick={() => setEditQuality(!editQuality)} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${editQuality ? 'bg-purple-100 border-purple-300 text-purple-800' : 'bg-white border-slate-200 text-slate-400 hover:border-purple-200'}`}>
+                          <div className="flex items-center gap-2 font-bold text-sm">
+                              <Paintbrush className="w-4 h-4"/> Quality
+                          </div>
+                          {editQuality && <CheckCircle2 className="w-4 h-4 text-purple-600"/>}
+                      </button>
+                  </div>
+              </div>
+
               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Observações</label>
-              <textarea className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl h-28 text-sm outline-none resize-none text-slate-700"
+              <textarea className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl h-24 text-sm outline-none resize-none text-slate-700"
                 value={editNotes} onChange={(e) => setEditNotes(e.target.value)} placeholder="Detalhes..." />
+              
               <button onClick={handleSave} className="w-full mt-6 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-2 shadow-lg">
                 <Save className="w-5 h-5" /> SALVAR ALTERAÇÃO
               </button>
