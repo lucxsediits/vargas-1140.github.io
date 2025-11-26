@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
@@ -15,8 +15,16 @@ import {
   query,
   orderBy,
   limit,
-  writeBatch 
+  writeBatch,
+  updateDoc,
+  arrayUnion
 } from 'firebase/firestore';
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL
+} from 'firebase/storage';
 import { 
   CheckCircle2, 
   AlertCircle, 
@@ -36,9 +44,16 @@ import {
   History,
   UserCircle2,
   LogOut,
-  Hammer,      // Icone Civil
-  Wrench,      // Icone Install
-  Paintbrush   // Icone Quality (Alterado para Pincel)
+  Hammer,      // Civil
+  Wrench,      // Install
+  Paintbrush,  // Quality
+  Eye,         // Visualizar
+  Camera,      // Fotos
+  Image as ImageIcon,
+  BarChart3,   // Dashboard
+  CheckSquare, // Seleção em Lote
+  Trash2,
+  Loader2
 } from 'lucide-react';
 
 // ------------------------------------------------------------------
@@ -54,18 +69,19 @@ const firebaseConfig = {
     measurementId: "G-ZWHG09M19B",
 };
 
-let app, auth, db;
+let app, auth, db, storage;
 try {
   if (firebaseConfig.apiKey) {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
+    storage = getStorage(app); // Inicializa Storage para Fotos
   }
 } catch (e) {
   console.error("Erro Firebase", e);
 }
 
-// --- CONFIGURAÇÃO DE USUÁRIOS (Adicione ou remova nomes aqui) ---
+// --- CONFIGURAÇÃO DE USUÁRIOS ---
 const USERS_LIST = [
   "Jonathas",
   "Lucas",
@@ -105,26 +121,36 @@ const FLOORS_TOTAL = 18;
 const UNITS_PER_FLOOR = 20;
 
 export default function App() {
-  const [user, setUser] = useState(null); // Firebase User
-  const [currentUserData, setCurrentUserData] = useState(null); // Local App User Name
+  const [user, setUser] = useState(null); 
+  const [currentUserData, setCurrentUserData] = useState(null);
   const [apartments, setApartments] = useState({});
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   
+  // Estados de Edição Individual
   const [selectedAptId, setSelectedAptId] = useState(null);
   const [editNotes, setEditNotes] = useState('');
   const [editStatus, setEditStatus] = useState('nao-verificado');
-  
-  // Novos estados para as responsabilidades
   const [editCivil, setEditCivil] = useState(false);
   const [editInstall, setEditInstall] = useState(false);
   const [editQuality, setEditQuality] = useState(false);
+  const [editPhotos, setEditPhotos] = useState([]); // Array de URLs
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef(null);
   
+  // Filtros e Busca
   const [showOnlyPriority, setShowOnlyPriority] = useState(false);
   const [statusFilter, setStatusFilter] = useState(null);
+  const [filterTeam, setFilterTeam] = useState(null); // 'civil', 'install', 'quality', null
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // Modais e Modos
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showLogsModal, setShowLogsModal] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [selectedBatchIds, setSelectedBatchIds] = useState([]);
+
   
   const [expandedFloors, setExpandedFloors] = useState(
     Object.fromEntries(Array.from({length: FLOORS_TOTAL}, (_, i) => [i + 1, true]))
@@ -132,18 +158,14 @@ export default function App() {
 
   if (!app) return <div className="p-10 text-center font-bold text-red-500">Erro: Firebase não configurado.</div>;
 
-  // --- AUTENTICAÇÃO E INICIALIZAÇÃO ---
   useEffect(() => {
-    // Tenta recuperar usuario salvo no navegador
     const savedUser = localStorage.getItem('vargas_app_user');
     if (savedUser) setCurrentUserData(savedUser);
-
     signInAnonymously(auth);
     const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
 
-  // --- CARREGAMENTO DE DADOS (APARTAMENTOS) ---
   useEffect(() => {
     if (!user) return;
     const unsubscribe = onSnapshot(collection(db, 'vargas_vistoria_data'), (snapshot) => {
@@ -155,7 +177,6 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
-  // --- CARREGAMENTO DE LOGS (Últimos 50) ---
   useEffect(() => {
     if (!user || !showLogsModal) return;
     const q = query(collection(db, 'activity_logs'), orderBy('timestamp', 'desc'), limit(50));
@@ -167,7 +188,6 @@ export default function App() {
     return () => unsubscribe();
   }, [user, showLogsModal]);
 
-  // --- FUNÇÃO DE LOG (REGISTRA AÇÃO) ---
   const logAction = async (action, target, details) => {
     try {
       await addDoc(collection(db, 'activity_logs'), {
@@ -182,7 +202,6 @@ export default function App() {
     }
   };
 
-  // --- LOGIN MANUAL SIMPLES ---
   const handleLogin = (name) => {
     setCurrentUserData(name);
     localStorage.setItem('vargas_app_user', name);
@@ -193,7 +212,6 @@ export default function App() {
     localStorage.removeItem('vargas_app_user');
   };
 
-  // --- FUNÇÕES DO SISTEMA ---
   const manualInitializeData = async () => {
     if (!confirm("TEM CERTEZA? Isso vai resetar todos os status. O log registrará essa ação.")) return;
     
@@ -210,16 +228,15 @@ export default function App() {
           isPriority: PRIORITY_IDS.includes(id),
           pendencyCivil: false,
           pendencyInstall: false,
-          pendencyQuality: false
+          pendencyQuality: false,
+          photos: []
         }, { merge: true });
         op++;
         if (op >= 450) { await batch.commit(); op = 0; }
       }
     }
     if (op > 0) await batch.commit();
-    
     await logAction('RESET TOTAL', 'SISTEMA', 'Inicializou/Resetou o banco de dados');
-    
     setLoading(false);
     setShowResetConfirm(false);
     alert("Banco resetado e log registrado.");
@@ -228,7 +245,6 @@ export default function App() {
   const handleSave = async () => {
     if (!user || !selectedAptId) return;
 
-    // Salva Apto com novas pendencias
     await setDoc(doc(db, 'vargas_vistoria_data', selectedAptId), {
       id: selectedAptId,
       status: editStatus,
@@ -241,7 +257,6 @@ export default function App() {
       isPriority: PRIORITY_IDS.includes(selectedAptId)
     }, { merge: true });
 
-    // Registra Log detalhado
     const pendencies = [];
     if (editCivil) pendencies.push("Civil");
     if (editInstall) pendencies.push("Install");
@@ -249,10 +264,72 @@ export default function App() {
     const pendencyText = pendencies.length > 0 ? `| Pendências: ${pendencies.join(', ')}` : '';
 
     await logAction('EDITAR', selectedAptId, `Status: ${editStatus} ${pendencyText} | Obs: ${editNotes}`);
-
     setSelectedAptId(null);
   };
 
+  // --- LÓGICA DE FOTOS ---
+  const handlePhotoUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    try {
+      const storageRef = ref(storage, `photos/${selectedAptId}/${Date.now()}_${file.name}`);
+      const snapshot = await uploadBytes(storageRef, file);
+      const downloadURL = await getDownloadURL(snapshot.ref);
+
+      // Atualiza estado local e Firestore
+      setEditPhotos(prev => [...prev, downloadURL]);
+      await updateDoc(doc(db, 'vargas_vistoria_data', selectedAptId), {
+        photos: arrayUnion(downloadURL)
+      });
+      await logAction('FOTO', selectedAptId, 'Adicionou nova foto');
+    } catch (error) {
+      console.error("Erro upload", error);
+      alert("Erro ao enviar foto. Verifique se o Storage está ativado no Firebase Console.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // --- LÓGICA DE SELEÇÃO EM LOTE ---
+  const toggleSelection = (id) => {
+    if (selectedBatchIds.includes(id)) {
+      setSelectedBatchIds(prev => prev.filter(item => item !== id));
+    } else {
+      setSelectedBatchIds(prev => [...prev, id]);
+    }
+  };
+
+  const handleBatchAction = async (field, value) => {
+    if (selectedBatchIds.length === 0) return;
+    if (!confirm(`Confirmar alteração em ${selectedBatchIds.length} apartamentos?`)) return;
+
+    setLoading(true);
+    const batch = writeBatch(db);
+    
+    selectedBatchIds.forEach(id => {
+      const ref = doc(db, 'vargas_vistoria_data', id);
+      const updateData = { updatedAt: new Date().toISOString(), updatedBy: currentUserData };
+      
+      if (field === 'status') updateData.status = value;
+      if (field === 'civil') updateData.pendencyCivil = value;
+      if (field === 'install') updateData.pendencyInstall = value;
+      if (field === 'quality') updateData.pendencyQuality = value;
+
+      // Garante que o documento exista (merge)
+      batch.set(ref, { id, ...updateData }, { merge: true });
+    });
+
+    await batch.commit();
+    await logAction('LOTE', `${selectedBatchIds.length} APTOS`, `Alteração em massa: ${field}`);
+    
+    setLoading(false);
+    setSelectedBatchIds([]);
+    setIsBatchMode(false);
+  };
+
+  // --- EXCEL E GRÁFICOS ---
   const copyReport = () => {
     const done = Object.values(apartments).filter(a => a.status === 'pronto').length;
     const total = Object.values(apartments).length || (FLOORS_TOTAL * UNITS_PER_FLOOR);
@@ -262,39 +339,19 @@ export default function App() {
 
   const exportToExcel = () => {
     const dataHoje = new Date().toLocaleDateString('pt-BR');
-    
     let html = `
       <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
       <head><meta charset="UTF-8"></head><body><table>
       <tr><td colspan="10" style="font-weight:bold; font-size:16px;">RELATÓRIO VARGAS 1140 - Gerado por ${currentUserData}</td></tr>
-      <tr>
-        <td>Andar</td>
-        <td>Apto</td>
-        <td>Status</td>
-        <td>Cury Civil</td>
-        <td>Cury Install</td>
-        <td>Quality</td>
-        <td>Obs</td>
-      </tr>
+      <tr><td>Andar</td><td>Apto</td><td>Status</td><td>Cury Civil</td><td>Cury Install</td><td>Quality</td><td>Fotos</td><td>Obs</td></tr>
     `;
-    
-    // Simplificado para o exemplo (mas mantendo funcionalidade)
     Object.values(apartments).forEach(apt => {
         const civil = apt.pendencyCivil ? "SIM" : "";
         const install = apt.pendencyInstall ? "SIM" : "";
         const quality = apt.pendencyQuality ? "SIM" : "";
-        
-        html += `<tr>
-            <td>${apt.id.substring(0, apt.id.length-2)}</td>
-            <td>${apt.id}</td>
-            <td>${apt.status}</td>
-            <td>${civil}</td>
-            <td>${install}</td>
-            <td>${quality}</td>
-            <td>${apt.notes || ''}</td>
-        </tr>`;
+        const hasPhotos = apt.photos && apt.photos.length > 0 ? `${apt.photos.length} fotos` : "";
+        html += `<tr><td>${apt.id.substring(0, apt.id.length-2)}</td><td>${apt.id}</td><td>${apt.status}</td><td>${civil}</td><td>${install}</td><td>${quality}</td><td>${hasPhotos}</td><td>${apt.notes || ''}</td></tr>`;
     });
-
     html += `</table></body></html>`;
     const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
     const url = URL.createObjectURL(blob);
@@ -309,13 +366,17 @@ export default function App() {
   };
 
   const stats = useMemo(() => {
-    const s = { pronto: 0, facil: 0, dificil: 0, 'nao-verificado': 0, total: 0 };
+    const s = { 
+      pronto: 0, facil: 0, dificil: 0, 'nao-verificado': 0, total: 0,
+      civilCount: 0, installCount: 0, qualityCount: 0 
+    };
     const totalUnits = FLOORS_TOTAL * UNITS_PER_FLOOR;
-    
     Object.values(apartments).forEach(a => {
       if (s[a.status] !== undefined) s[a.status]++;
+      if (a.pendencyCivil) s.civilCount++;
+      if (a.pendencyInstall) s.installCount++;
+      if (a.pendencyQuality) s.qualityCount++;
     });
-    
     s['nao-verificado'] += (totalUnits - Object.keys(apartments).length);
     s.total = totalUnits;
     return s;
@@ -334,7 +395,6 @@ export default function App() {
     return matrix;
   }, [apartments]);
 
-  // --- TELA DE "LOGIN" ---
   if (!currentUserData) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
@@ -344,16 +404,10 @@ export default function App() {
           </div>
           <h1 className="text-2xl font-black text-slate-800 mb-2">Quem é você?</h1>
           <p className="text-slate-500 mb-6 text-sm">Selecione seu nome para registrar suas atividades no log.</p>
-          
           <div className="grid gap-3">
             {USERS_LIST.map(name => (
-              <button 
-                key={name}
-                onClick={() => handleLogin(name)}
-                className="w-full p-4 rounded-xl border border-slate-200 hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 font-bold text-slate-700 transition-all text-left flex items-center justify-between group"
-              >
-                {name}
-                <span className="opacity-0 group-hover:opacity-100 text-blue-500">➜</span>
+              <button key={name} onClick={() => handleLogin(name)} className="w-full p-4 rounded-xl border border-slate-200 hover:border-blue-500 hover:bg-blue-50 hover:text-blue-700 font-bold text-slate-700 transition-all text-left flex items-center justify-between group">
+                {name} <span className="opacity-0 group-hover:opacity-100 text-blue-500">➜</span>
               </button>
             ))}
           </div>
@@ -365,20 +419,17 @@ export default function App() {
   if (loading) return <div className="flex h-screen items-center justify-center text-xl font-bold text-slate-600 animate-pulse">Carregando Sistema...</div>;
 
   return (
-    <div className="min-h-screen bg-slate-900 font-sans text-slate-900 flex flex-col pb-20">
-      
-      {/* --- CABEÇALHO --- */}
+    <div className="min-h-screen bg-slate-900 font-sans text-slate-900 flex flex-col pb-32">
       <header className="bg-slate-800 text-white shadow-lg z-20 sticky top-0 border-b border-slate-700">
         <div className="max-w-7xl mx-auto p-4">
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex justify-between items-center mb-4">
              <div className="flex items-center gap-3">
               <div className="bg-blue-600 p-2.5 rounded-lg shadow-lg">
                 <ClipboardList className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h1 className="text-xl md:text-2xl font-black tracking-tight">VARGAS 1140</h1>
+                <h1 className="text-lg md:text-2xl font-black tracking-tight">VARGAS 1140</h1>
                 <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-400 uppercase tracking-widest">Painel</span>
                     <span className="text-[10px] bg-slate-700 px-2 py-0.5 rounded text-blue-200 border border-slate-600 flex items-center gap-1">
                         <UserCircle2 className="w-3 h-3"/> {currentUserData}
                     </span>
@@ -386,68 +437,86 @@ export default function App() {
               </div>
             </div>
             <button onClick={handleLogout} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 border border-red-900/50 p-2 rounded hover:bg-red-900/20">
-                <LogOut className="w-3 h-3"/> Sair
+                <LogOut className="w-3 h-3"/>
             </button>
           </div>
 
-          <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
-            {/* Busca */}
-            <div className="relative w-full md:w-64 group">
-              <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-              <input 
-                type="text" placeholder="Buscar Apto..." value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg py-2 pl-10 pr-4 text-sm text-white focus:ring-2 focus:ring-blue-500"
-              />
+          <div className="flex flex-col gap-3">
+            {/* Linha Superior: Busca e Botões Principais */}
+            <div className="flex gap-2">
+                <div className="relative flex-1 group">
+                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                    <input type="text" placeholder="Buscar Apto..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg py-2 pl-10 pr-4 text-sm text-white focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <button onClick={() => setShowDashboard(true)} className="bg-purple-600 hover:bg-purple-500 text-white p-2 rounded-lg" title="Dashboard">
+                    <BarChart3 className="w-5 h-5"/>
+                </button>
+                <button onClick={() => { setIsBatchMode(!isBatchMode); setSelectedBatchIds([]); }} className={`p-2 rounded-lg transition-all ${isBatchMode ? 'bg-yellow-400 text-black animate-pulse' : 'bg-slate-700 text-slate-300'}`} title="Seleção em Lote">
+                    <CheckSquare className="w-5 h-5"/>
+                </button>
             </div>
             
-            {/* Ações Rápidas */}
-            <div className="flex flex-wrap gap-2 w-full md:w-auto">
-                <button onClick={() => setShowOnlyPriority(!showOnlyPriority)} className={`px-4 py-2 rounded-lg font-bold text-xs uppercase border flex items-center gap-2 ${showOnlyPriority ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-slate-700 text-yellow-400 border-slate-600'}`}>
-                    <Star className="w-3 h-3" fill={showOnlyPriority ? "black" : "none"} /> Principais
+            {/* Linha Inferior: Filtros de Equipe */}
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+                <button onClick={() => setFilterTeam(filterTeam === 'civil' ? null : 'civil')} className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase flex items-center gap-2 border whitespace-nowrap transition-all ${filterTeam === 'civil' ? 'bg-orange-500 text-white border-orange-600 scale-105' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                    <Hammer className="w-3 h-3" /> Civil
                 </button>
-                <button onClick={exportToExcel} className="px-4 py-2 bg-green-700 text-white rounded-lg font-bold text-xs uppercase flex items-center gap-2">
-                    <FileSpreadsheet className="w-4 h-4" /> Excel
+                <button onClick={() => setFilterTeam(filterTeam === 'install' ? null : 'install')} className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase flex items-center gap-2 border whitespace-nowrap transition-all ${filterTeam === 'install' ? 'bg-blue-500 text-white border-blue-600 scale-105' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                    <Wrench className="w-3 h-3" /> Install
                 </button>
-                <button onClick={copyReport} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold text-xs uppercase flex items-center gap-2">
-                    <Share2 className="w-4 h-4" /> Zap
+                <button onClick={() => setFilterTeam(filterTeam === 'quality' ? null : 'quality')} className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase flex items-center gap-2 border whitespace-nowrap transition-all ${filterTeam === 'quality' ? 'bg-purple-500 text-white border-purple-600 scale-105' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                    <Paintbrush className="w-3 h-3" /> Quality
+                </button>
+                <button onClick={() => setShowOnlyPriority(!showOnlyPriority)} className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase flex items-center gap-2 border whitespace-nowrap transition-all ${showOnlyPriority ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                    <Star className="w-3 h-3" /> Vip
                 </button>
             </div>
-          </div>
 
-          {/* Cards de Status */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-            {Object.entries(STATUS_CONFIG).map(([key, conf]) => (
-                <button key={key} onClick={() => setStatusFilter(statusFilter === key ? null : key)}
-                  className={`p-3 rounded-xl flex flex-col border-2 ${statusFilter === key ? 'bg-slate-700 border-blue-400' : 'bg-slate-700/30 border-transparent hover:bg-slate-700/50'}`}>
-                  <div className="flex justify-between w-full mb-1">
-                    <span className={`text-xs font-bold uppercase ${statusFilter === key ? 'text-white' : 'text-slate-400'}`}>{conf.label}</span>
-                    <conf.icon className={`w-4 h-4 ${statusFilter === key ? 'text-white' : 'text-slate-500'}`} />
-                  </div>
-                  <span className={`text-2xl font-black ${statusFilter === key ? 'text-white' : 'text-slate-300'}`}>{stats[key]}</span>
-                </button>
-            ))}
+            {/* Filtros de Status (Pronto, Fácil, Difícil) */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+              {Object.entries(STATUS_CONFIG).map(([key, conf]) => (
+                  <button key={key} onClick={() => setStatusFilter(statusFilter === key ? null : key)}
+                    className={`p-2 rounded-xl flex flex-col items-center justify-center border-2 transition-all ${statusFilter === key ? 'bg-slate-700 border-blue-400 scale-95' : 'bg-slate-700/30 border-transparent hover:bg-slate-700/50'}`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <conf.icon className={`w-4 h-4 ${statusFilter === key ? 'text-white' : 'text-slate-500'}`} />
+                      <span className={`text-[10px] font-bold uppercase ${statusFilter === key ? 'text-white' : 'text-slate-400'}`}>{conf.label}</span>
+                    </div>
+                    <span className={`text-xl font-black ${statusFilter === key ? 'text-white' : 'text-slate-300'}`}>{stats[key]}</span>
+                  </button>
+              ))}
+            </div>
           </div>
         </div>
       </header>
 
-      {/* --- LISTA DE ANDARES --- */}
       <main className="flex-1 p-4 max-w-7xl mx-auto w-full space-y-4">
+        {/* AVISO DE MODO EM LOTE */}
+        {isBatchMode && (
+            <div className="bg-yellow-400/20 border border-yellow-400 p-3 rounded-lg text-yellow-200 text-sm font-bold text-center animate-in slide-in-from-top-2">
+                MODO DE SELEÇÃO ATIVO: Toque nos apartamentos para selecionar.
+                <br/>
+                <span className="text-white">{selectedBatchIds.length} selecionados</span>
+            </div>
+        )}
+
         {gridMatrix.map(({ floor, units }) => {
           const unitsFiltered = units.filter(apt => {
             const isPriority = PRIORITY_IDS.includes(apt.id);
             if (searchTerm && !apt.id.includes(searchTerm)) return false;
             if (showOnlyPriority && !isPriority) return false;
             if (statusFilter && apt.status !== statusFilter) return false;
+            if (filterTeam === 'civil' && !apt.pendencyCivil) return false;
+            if (filterTeam === 'install' && !apt.pendencyInstall) return false;
+            if (filterTeam === 'quality' && !apt.pendencyQuality) return false;
             return true;
           });
 
-          if ((statusFilter || showOnlyPriority || searchTerm) && unitsFiltered.length === 0) return null;
+          if ((filterTeam || statusFilter || showOnlyPriority || searchTerm) && unitsFiltered.length === 0) return null;
 
           const totalNoAndar = units.length;
           const prontosNoAndar = units.filter(u => u.status === 'pronto').length;
           const porcentagemAndar = Math.round((prontosNoAndar / totalNoAndar) * 100);
-          const isOpen = expandedFloors[floor] || searchTerm !== '';
+          const isOpen = expandedFloors[floor] || searchTerm !== '' || filterTeam !== null || isBatchMode;
 
           return (
             <div key={floor} className="bg-white rounded-xl overflow-hidden shadow-md border border-slate-200">
@@ -466,21 +535,47 @@ export default function App() {
                   {unitsFiltered.map(apt => {
                     const isPriority = PRIORITY_IDS.includes(apt.id);
                     const status = STATUS_CONFIG[apt.status];
+                    const isSelected = selectedBatchIds.includes(apt.id);
+                    
                     return (
                       <button 
                         key={apt.id} 
                         onClick={() => { 
-                            setSelectedAptId(apt.id); 
-                            setEditStatus(apt.status); 
-                            setEditNotes(apt.notes || ''); 
-                            setEditCivil(apt.pendencyCivil || false);
-                            setEditInstall(apt.pendencyInstall || false);
-                            setEditQuality(apt.pendencyQuality || false);
+                            if (isBatchMode) {
+                                toggleSelection(apt.id);
+                            } else {
+                                setSelectedAptId(apt.id); 
+                                setEditStatus(apt.status); 
+                                setEditNotes(apt.notes || ''); 
+                                setEditCivil(apt.pendencyCivil || false);
+                                setEditInstall(apt.pendencyInstall || false);
+                                setEditQuality(apt.pendencyQuality || false);
+                                setEditPhotos(apt.photos || []);
+                            }
                         }}
-                        className={`relative h-14 rounded-lg border-2 flex items-center justify-center transition-all ${status.bg} ${status.border} ${status.text} hover:scale-105 hover:shadow-lg`}>
-                        <span className="font-black text-sm">{apt.id}</span>
+                        className={`
+                            relative h-14 rounded-lg border-2 flex flex-col items-center justify-center transition-all overflow-hidden
+                            ${status.bg} ${status.text}
+                            ${isBatchMode && isSelected ? 'ring-4 ring-blue-500 ring-offset-2 border-blue-600 scale-95' : status.border}
+                            ${!isBatchMode ? 'hover:scale-105 hover:shadow-lg' : ''}
+                        `}>
+                        
+                        <span className="font-black text-sm z-10">{apt.id}</span>
+                        
+                        <div className="flex gap-0.5 mt-0.5 z-10">
+                            {apt.pendencyCivil && <div className="bg-orange-500 rounded-sm p-[1px]"><Hammer className="w-2 h-2 text-white" /></div>}
+                            {apt.pendencyInstall && <div className="bg-blue-500 rounded-sm p-[1px]"><Wrench className="w-2 h-2 text-white" /></div>}
+                            {apt.pendencyQuality && <div className="bg-purple-500 rounded-sm p-[1px]"><Paintbrush className="w-2 h-2 text-white" /></div>}
+                            {apt.photos?.length > 0 && <div className="bg-slate-700 rounded-sm p-[1px]"><Camera className="w-2 h-2 text-white" /></div>}
+                        </div>
+
                         {isPriority && <div className="absolute -top-1.5 -right-1.5 bg-yellow-400 text-black rounded-full p-0.5 shadow-sm border border-white z-10"><Star className="w-2.5 h-2.5 fill-black" /></div>}
-                        {apt.notes && <div className="absolute -bottom-1 -right-1 bg-blue-600 w-3 h-3 rounded-full border-2 border-white animate-pulse" />}
+                        
+                        {isBatchMode && isSelected && (
+                             <div className="absolute inset-0 bg-blue-500/30 flex items-center justify-center z-20">
+                                <CheckCircle2 className="w-8 h-8 text-blue-600 bg-white rounded-full" />
+                             </div>
+                        )}
                       </button>
                     );
                   })}
@@ -489,29 +584,92 @@ export default function App() {
             </div>
           );
         })}
-
-        {/* --- RODAPÉ DE ADMINISTRAÇÃO E LOGS --- */}
-        <div className="mt-10 p-4 border-t border-slate-700 flex flex-col md:flex-row gap-4 justify-between items-center">
-            
-            <button onClick={() => setShowLogsModal(true)} className="flex items-center gap-2 text-sm text-slate-400 hover:text-blue-400 transition-colors bg-slate-800 py-2 px-4 rounded border border-slate-700">
-                <History className="w-4 h-4" /> Ver Histórico de Ações
-            </button>
-
-            {showResetConfirm ? (
-                <div className="bg-red-900/50 p-4 rounded-lg border border-red-500 flex flex-col items-center gap-3">
-                    <p className="text-red-200 text-sm font-bold">CUIDADO: Isso vai zerar o banco.</p>
-                    <div className="flex gap-2">
-                        <button onClick={manualInitializeData} className="px-4 py-2 bg-red-600 text-white font-bold rounded">Confirmar</button>
-                        <button onClick={() => setShowResetConfirm(false)} className="px-4 py-2 bg-slate-600 text-white font-bold rounded">Cancelar</button>
-                    </div>
-                </div>
-            ) : (
-                <button onClick={() => setShowResetConfirm(true)} className="flex items-center gap-2 text-xs text-slate-600 hover:text-red-400 transition-colors">
-                    <Database className="w-3 h-3" /> Admin: Resetar Banco
-                </button>
-            )}
-        </div>
       </main>
+
+      {/* --- BARRA FLUTUANTE DE AÇÕES EM LOTE --- */}
+      {isBatchMode && selectedBatchIds.length > 0 && (
+          <div className="fixed bottom-0 left-0 right-0 bg-slate-800 border-t border-slate-700 p-4 z-40 animate-in slide-in-from-bottom flex flex-col items-center">
+              <div className="text-white font-bold mb-2 text-sm">{selectedBatchIds.length} selecionados</div>
+              <div className="flex gap-2 overflow-x-auto w-full justify-center">
+                  <button onClick={() => handleBatchAction('status', 'pronto')} className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded font-bold text-xs uppercase">Marcar Pronto</button>
+                  <button onClick={() => handleBatchAction('civil', true)} className="bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded font-bold text-xs uppercase flex items-center gap-1"><Hammer className="w-3 h-3"/> + Civil</button>
+                  <button onClick={() => handleBatchAction('install', true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded font-bold text-xs uppercase flex items-center gap-1"><Wrench className="w-3 h-3"/> + Install</button>
+                  <button onClick={() => handleBatchAction('quality', true)} className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded font-bold text-xs uppercase flex items-center gap-1"><Paintbrush className="w-3 h-3"/> + Quality</button>
+              </div>
+          </div>
+      )}
+
+      {/* --- MODAL DE DASHBOARD --- */}
+      {showDashboard && (
+        <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in">
+           <div className="bg-slate-800 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto border border-slate-700">
+               <div className="p-6 border-b border-slate-700 flex justify-between items-center sticky top-0 bg-slate-800 z-10">
+                   <h2 className="text-2xl font-black text-white flex items-center gap-2">
+                       <BarChart3 className="w-6 h-6 text-purple-400"/> Dashboard Gerencial
+                   </h2>
+                   <button onClick={() => setShowDashboard(false)}><X className="w-6 h-6 text-slate-400 hover:text-white" /></button>
+               </div>
+               
+               <div className="p-6 grid gap-6 md:grid-cols-2">
+                   {/* Card Geral */}
+                   <div className="bg-slate-700/50 p-6 rounded-xl border border-slate-600">
+                       <h3 className="text-slate-400 text-xs font-bold uppercase mb-4">Progresso Geral</h3>
+                       <div className="flex items-end gap-2 mb-2">
+                           <span className="text-4xl font-black text-white">{Math.round((stats.pronto / stats.total) * 100)}%</span>
+                           <span className="text-slate-400 mb-1">concluído</span>
+                       </div>
+                       <div className="w-full bg-slate-600 h-3 rounded-full overflow-hidden mb-4">
+                           <div className="bg-emerald-500 h-full" style={{width: `${(stats.pronto / stats.total) * 100}%`}}></div>
+                       </div>
+                       <div className="grid grid-cols-2 gap-2 text-xs">
+                           <div className="bg-emerald-500/10 p-2 rounded text-emerald-400 border border-emerald-500/20">Prontos: {stats.pronto}</div>
+                           <div className="bg-slate-600 p-2 rounded text-slate-300">Total: {stats.total}</div>
+                       </div>
+                   </div>
+
+                   {/* Card Pendências */}
+                   <div className="bg-slate-700/50 p-6 rounded-xl border border-slate-600">
+                       <h3 className="text-slate-400 text-xs font-bold uppercase mb-4">Pendências por Equipe</h3>
+                       <div className="space-y-4">
+                           <div>
+                               <div className="flex justify-between text-sm mb-1">
+                                   <span className="text-orange-400 font-bold flex items-center gap-1"><Hammer className="w-3 h-3"/> Civil</span>
+                                   <span className="text-white font-bold">{stats.civilCount} aptos</span>
+                               </div>
+                               <div className="w-full bg-slate-600 h-2 rounded-full overflow-hidden">
+                                   <div className="bg-orange-500 h-full" style={{width: `${(stats.civilCount / stats.total) * 100}%`}}></div>
+                               </div>
+                           </div>
+                           <div>
+                               <div className="flex justify-between text-sm mb-1">
+                                   <span className="text-blue-400 font-bold flex items-center gap-1"><Wrench className="w-3 h-3"/> Install</span>
+                                   <span className="text-white font-bold">{stats.installCount} aptos</span>
+                               </div>
+                               <div className="w-full bg-slate-600 h-2 rounded-full overflow-hidden">
+                                   <div className="bg-blue-500 h-full" style={{width: `${(stats.installCount / stats.total) * 100}%`}}></div>
+                               </div>
+                           </div>
+                           <div>
+                               <div className="flex justify-between text-sm mb-1">
+                                   <span className="text-purple-400 font-bold flex items-center gap-1"><Paintbrush className="w-3 h-3"/> Quality</span>
+                                   <span className="text-white font-bold">{stats.qualityCount} aptos</span>
+                               </div>
+                               <div className="w-full bg-slate-600 h-2 rounded-full overflow-hidden">
+                                   <div className="bg-purple-500 h-full" style={{width: `${(stats.qualityCount / stats.total) * 100}%`}}></div>
+                               </div>
+                           </div>
+                       </div>
+                   </div>
+               </div>
+               
+               <div className="p-6 border-t border-slate-700 flex justify-end gap-2">
+                   <button onClick={exportToExcel} className="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2">
+                       <FileSpreadsheet className="w-4 h-4"/> Exportar Relatório Completo
+                   </button>
+               </div>
+           </div>
+        </div>
+      )}
 
       {/* --- MODAL DE EDIÇÃO --- */}
       {selectedAptId && (
@@ -523,7 +681,7 @@ export default function App() {
             </div>
             
             <div className="p-6 overflow-y-auto">
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-3">Alterar Status</label>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-3">Status Geral</label>
               <div className="grid grid-cols-2 gap-3 mb-6">
                 {Object.entries(STATUS_CONFIG).map(([key, conf]) => (
                   <button key={key} onClick={() => setEditStatus(key)}
@@ -559,6 +717,26 @@ export default function App() {
                           {editQuality && <CheckCircle2 className="w-4 h-4 text-purple-600"/>}
                       </button>
                   </div>
+              </div>
+
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Fotos e Evidências</label>
+              <div className="mb-6 flex gap-2 overflow-x-auto pb-2">
+                   {/* Botão de Adicionar Foto */}
+                   <button onClick={() => fileInputRef.current?.click()} className="flex-shrink-0 w-20 h-20 bg-slate-100 border-2 border-dashed border-slate-300 rounded-lg flex flex-col items-center justify-center text-slate-400 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-500 transition-all">
+                       {isUploading ? <Loader2 className="w-6 h-6 animate-spin"/> : <Camera className="w-6 h-6"/>}
+                       <span className="text-[10px] font-bold mt-1">Adicionar</span>
+                   </button>
+                   <input type="file" ref={fileInputRef} onChange={handlePhotoUpload} accept="image/*" className="hidden" />
+
+                   {/* Lista de Fotos */}
+                   {editPhotos.map((url, idx) => (
+                       <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="flex-shrink-0 w-20 h-20 bg-slate-200 rounded-lg overflow-hidden border border-slate-200 relative group">
+                           <img src={url} alt="Evidência" className="w-full h-full object-cover" />
+                           <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                               <Eye className="w-6 h-6 text-white"/>
+                           </div>
+                       </a>
+                   ))}
               </div>
 
               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Observações</label>
@@ -617,6 +795,22 @@ export default function App() {
             </div>
         </div>
       )}
+      
+      {/* Botões Flutuantes de Rodapé */}
+      <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-30">
+        <button onClick={() => setShowLogsModal(true)} className="bg-slate-800 text-white p-3 rounded-full shadow-lg border border-slate-600 hover:bg-slate-700" title="Logs">
+             <History className="w-5 h-5"/>
+        </button>
+        {showResetConfirm ? (
+            <button onClick={manualInitializeData} className="bg-red-600 text-white p-3 rounded-full shadow-lg border border-red-500 animate-pulse" title="Confirmar Reset">
+                <Trash2 className="w-5 h-5"/>
+            </button>
+        ) : (
+            <button onClick={() => setShowResetConfirm(true)} className="bg-slate-800 text-red-400 p-3 rounded-full shadow-lg border border-slate-600 hover:bg-slate-700" title="Resetar">
+                <Database className="w-5 h-5"/>
+            </button>
+        )}
+      </div>
 
     </div>
   );
